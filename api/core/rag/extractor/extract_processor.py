@@ -217,6 +217,11 @@ class ExtractProcessor:
                         extractor = CSVExtractor(file_path, autodetect_encoding=True)
                     elif file_extension == ".epub":
                         extractor = UnstructuredEpubExtractor(file_path)
+                    elif file_extension == ".pptx":
+                        assert upload_file is not None, "upload_file is required"
+                        extractor = PptxExtractor(
+                            file_path, upload_file.tenant_id, upload_file.created_by, session=session
+                        )
                     else:
                         # txt
                         extractor = TextExtractor(file_path, autodetect_encoding=True)
