@@ -55,6 +55,9 @@ _DEFAULT_DOCUMENT_EXTENSION_BASE: frozenset[str] = frozenset(
         "vtt",
         "properties",
         "odt",
+        "pptx", 
+        "ppt", 
+        "doc",
     )
 )
 

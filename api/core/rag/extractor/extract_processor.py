@@ -20,6 +20,7 @@ from core.rag.extractor.markdown_extractor import MarkdownExtractor
 from core.rag.extractor.notion_extractor import NotionExtractor
 from core.rag.extractor.pdf_extractor import PdfExtractor
 from core.rag.extractor.text_extractor import TextExtractor
+from core.rag.extractor.pptx_extractor import PptxExtractor
 from core.rag.extractor.unstructured.unstructured_doc_extractor import UnstructuredWordExtractor
 from core.rag.extractor.unstructured.unstructured_eml_extractor import UnstructuredEmailExtractor
 from core.rag.extractor.unstructured.unstructured_epub_extractor import UnstructuredEpubExtractor
@@ -165,7 +166,7 @@ class ExtractProcessor:
                             file_path, upload_file.tenant_id, upload_file.created_by, session=session
                         )
                     elif file_extension == ".doc":
-                        extractor = UnstructuredWordExtractor(file_path, unstructured_api_url, unstructured_api_key)
+                        extractor = Unstructure  dWordExtractor(file_path, unstructured_api_url, unstructured_api_key)
                     elif file_extension == ".csv":
                         extractor = CSVExtractor(file_path, autodetect_encoding=True)
                     elif file_extension == ".msg":
@@ -212,6 +213,11 @@ class ExtractProcessor:
                         extractor = CSVExtractor(file_path, autodetect_encoding=True)
                     elif file_extension == ".epub":
                         extractor = UnstructuredEpubExtractor(file_path)
+                    elif file_extension == ".pptx":
+                        assert upload_file is not None
+                        extractor = PptxExtractor(
+                            file_path, upload_file.tenant_id, upload_file.created_by, session=session
+                        )    
                     else:
                         # txt
                         extractor = TextExtractor(file_path, autodetect_encoding=True)
