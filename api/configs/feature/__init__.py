@@ -1287,6 +1287,13 @@ class RagEtlConfig(BaseSettings):
         default="low",
     )
 
+    TRANSCRIBE_DECORATIVE_JUDGE: bool = Field(
+        description="Whether to ask the vision model to tell decorative images (logos, "
+        "watermarks, page decorations) from meaningful ones before chunking. Disable to "
+        "fall back to the cheap 'image repeated across pages' heuristic.",
+        default=True,
+    )
+
     TRANSCRIBE_MAX_CHARS_PER_CHUNK: int = Field(
         description="Max characters per transcription request; longer documents are split "
         "on line boundaries.",

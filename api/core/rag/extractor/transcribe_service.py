@@ -25,8 +25,9 @@ extractor 产出 ``list[Document]`` 之后立即调用 :func:`transcribe_documen
 2. **图片链接必须逐字符保留**：转写输出若丢失原文中的图片链接，该块结果将被丢弃，
    因为丢失图片会直接破坏 Track B 的前端渲染与多模态检索。
    **唯一的例外**是装饰性图片（公司 Logo、水印、页眉页脚配图）：这类链接在转写**之前**
-   就已由 :func:`_drop_decorative_images` 按"跨页重复出现"判定并主动剥离，
-   因此不会进入本条校验 —— 剥离发生在切块之前，约束 2 拿到的原文里本就没有它们。
+   就已由 :func:`_drop_decorative_images` 主动剥离 —— 优先用视觉模型逐张判定
+   （看图片内容，也看该图附近的正文），取不到判定时才回退到"跨页重复出现"的启发式。
+   因此不会进入本条校验：剥离发生在切块之前，约束 2 拿到的原文里本就没有它们。
 3. **不得导入 ParagraphIndexProcessor**：``paragraph_index_processor`` 模块顶部
    导入了 ``ExtractProcessor``，此处若反向导入会形成循环导入。因此图片链接的正则
    解析逻辑在此处独立实现（与上游保持同一套正则）。
@@ -49,6 +50,7 @@ from core.credit_usage import CreditUsageCreatedBy
 from core.llm_generator.prompts import DEFAULT_TRANSCRIBE_PROMPT
 from core.model_context import with_credit_usage_created_by
 from core.model_manager import ModelManager
+from core.rag.extractor.decorative_image_judge import is_judgeable_mime, judge_images
 from core.rag.models.document import Document
 from extensions.ext_database import db
 from factories.file_factory import build_from_mapping
@@ -106,6 +108,14 @@ _DETAIL_ENUM = getattr(ImagePromptMessageContent, "DETAIL", None)
 # 正文插图极少跨页复用，因此这两个阈值用于把"无关图片"与"正文图片"分开，不会误伤后者。
 _DECORATIVE_IMAGE_MIN_PAGES = 2
 _DECORATIVE_IMAGE_MIN_RATIO = 0.5
+
+# 构造"图片上下文"时的截断上限（与 PptxExtractor 的上下文预算同量级）：
+# 出现位置最多列 6 处；正文节选最多取 3 处，每处取图片链接前后各 160 字符，
+# 最终压缩空白后截到 160 字符。上下文太短模型判不准，太长则挤占图片本身的输入预算。
+_CONTEXT_POSITIONS_MAX = 6
+_CONTEXT_EXCERPTS_MAX = 3
+_CONTEXT_WINDOW_CHARS = 160
+_CONTEXT_CHARS_PER_EXCERPT = 160
 
 # 剥离装饰性图片链接后可能留下连续空行，收敛为最多一个空行，保持段落结构。
 _BLANK_LINE_RUN_PATTERN = re.compile(r"\n{3,}")
@@ -210,12 +220,18 @@ def _transcribe(
     succeeded = 0
 
     # 业务需求：去掉"无关图片"（公司 Logo、水印、页眉页脚配图）。
-    # 这类图跨页重复出现，只有在这里（唯一能看到全部页面的地方）才能判定，
+    # 判定优先走视觉模型（看图片内容，也看该图附近的正文），取不到判定才回退到
+    # "跨页重复出现"的频率启发式。这一步只有在这里（唯一能看到全部页面的地方）才能做，
     # 且必须早于 _split_chunks()：剥离后的文本再进切块与约束 2 校验，
     # 因此不会出现"转写结果缺少图片链接而整块被丢弃"。
     # 注意：剥离只作用于喂给模型的文本；转写失败时仍回退到未剥离的原文档，
     # 保证约束 1（绝不破坏原生解析结果）不被削弱。
-    stripped_documents = _drop_decorative_images(documents)
+    stripped_documents = _drop_decorative_images(
+        documents,
+        tenant_id=tenant_id,
+        session=session,
+        model_instance=model_instance,
+    )
 
     for document, source in zip(documents, stripped_documents, strict=False):
         try:
@@ -458,17 +474,39 @@ def _strip_code_fence(text: str) -> str:
 # --------------------------------------------------------------------------------------
 # 装饰性图片剥离（去掉"无关图片"）
 # --------------------------------------------------------------------------------------
-def _drop_decorative_images(documents: Sequence[Document]) -> list[Document]:
-    """剥离"跨页重复出现"的装饰性图片链接（公司 Logo、水印、页眉页脚配图）。
+def _drop_decorative_images(
+    documents: Sequence[Document],
+    *,
+    tenant_id: str,
+    session: Session | None,
+    model_instance: Any,
+) -> list[Document]:
+    """剥离装饰性图片链接（公司 Logo、水印、页眉页脚配图）。
 
-    判定依据只有一条：**同一张图在多页重复出现**。PPTX / PDF 每个页面是一个
-    Document，Logo 这类装饰性图片天然逐页复现；正文插图极少跨页复用，
-    因此该判定能把"无关图片"摘出来而不误伤正文。
+    判定优先走视觉模型：把图片内容，连同"它出现在哪里、附近的正文写了什么"一起交给
+    模型做 ``decorative`` / ``meaningful`` 二分类（与 ``PptxExtractor`` 同一口径）。
+    只有当判定不可用时（没有候选图、模型取不到、全部批次失败）才回退到
+    "同一张图跨页重复出现"的频率启发式 —— 后者只认跨页复现，会漏掉只在封面出现
+    一次的 Logo、只出现在少数页的水印，覆盖面明显更窄。
 
     调用时机必须在 :func:`_split_chunks` 之前：剥掉的链接不会进入切块结果，
     也就不会参与约束 2（图片链接必须逐字符保留）的校验，两者不冲突。
     """
-    decorative = _decorative_image_keys(documents)
+    if not any((document.page_content or "").strip() for document in documents):
+        return list(documents)
+
+    decorative = _vision_decorative_keys(
+        documents=documents,
+        tenant_id=tenant_id,
+        session=session,
+        model_instance=model_instance,
+    )
+    if decorative is None:
+        decorative = _decorative_image_keys(documents)
+        strategy = "跨页重复的频率启发式"
+    else:
+        strategy = "视觉模型判定"
+
     if not decorative:
         return list(documents)
 
@@ -485,9 +523,214 @@ def _drop_decorative_images(documents: Sequence[Document]) -> list[Document]:
 
     if dropped:
         logger.info(
-            "已剥离 %s 处跨页重复的装饰性图片链接（识别出 %s 张无关图片）。", dropped, len(decorative)
+            "已按%s剥离 %s 处装饰性图片链接（识别出 %s 张无关图片）。", strategy, dropped, len(decorative)
         )
     return stripped
+
+
+def _vision_decorative_keys(
+    *,
+    documents: Sequence[Document],
+    tenant_id: str,
+    session: Session | None,
+    model_instance: Any,
+) -> set[str] | None:
+    """用视觉模型判定装饰性图片；返回 ``None`` 表示判定不可用（调用方需回退）。"""
+    if not _decorative_judge_enabled():
+        # 显式关闭：直接当作"判定不可用"，让调用方走廉价的频率启发式。
+        return None
+
+    occurrences = _image_occurrences(documents)
+    if not occurrences:
+        return set()
+
+    # 只把"能判定"的图片（MIME 白名单内且查到体积）交给模型；
+    # 候选为空说明这批图片都不适合判定，同样按不可用处理。
+    sizes = _image_sizes(tenant_id=tenant_id, session=session, keys=list(occurrences))
+    if not sizes:
+        return None
+
+    detail = _resolve_image_detail()
+    contexts = _image_contexts(documents, occurrences)
+
+    def _load_image_contents(keys: Sequence[str]) -> Mapping[str, PromptMessageContentUnionTypes]:
+        return _load_image_prompt_contents(
+            keys=keys,
+            tenant_id=tenant_id,
+            session=session,
+            image_detail=detail,
+        )
+
+    return judge_images(
+        model_instance=model_instance,
+        occurrences=occurrences,
+        sizes=sizes,
+        contexts=contexts,
+        load_image_contents=_load_image_contents,
+        log_prefix="转写装饰图判定",
+    )
+
+
+def _image_occurrences(documents: Sequence[Document]) -> dict[str, int]:
+    """统计每张图片（按去 query 的 URL key）出现在多少个 Document 里。
+
+    PDF / PPTX 每页一个 Document，因此这里等价于"出现页数"；
+    docx / xlsx 只有一个 Document，则退化为"是否出现"，仅用于排序候选优先级。
+    """
+    occurrences: dict[str, int] = {}
+    for document in documents:
+        keys = {_url_key(url) for url in _image_urls_in_text(document.page_content or "")}
+        for key in keys:
+            if key:
+                occurrences[key] = occurrences.get(key, 0) + 1
+    return occurrences
+
+
+def _image_sizes(*, tenant_id: str, session: Session | None, keys: Sequence[str]) -> dict[str, int]:
+    """查出可判定图片的字节数 ``{图片 key: size}``。
+
+    只保留 MIME 在白名单内（跳过 emf / wmf 等矢量格式）且体积有效的图片；
+    查不到 ``UploadFile`` 记录的图片一律不送判定。
+    """
+    key_by_upload_file_id: dict[str, str] = {}
+    for key in keys:
+        upload_file_id = _match_upload_file_id(key)
+        if upload_file_id and upload_file_id not in key_by_upload_file_id:
+            key_by_upload_file_id[upload_file_id] = key
+
+    if not key_by_upload_file_id:
+        return {}
+
+    db_session = session if session is not None else db.session
+    upload_files = db_session.scalars(
+        select(UploadFile).where(
+            UploadFile.id.in_(list(key_by_upload_file_id)),
+            UploadFile.tenant_id == tenant_id,
+        )
+    ).all()
+
+    sizes: dict[str, int] = {}
+    for upload_file in upload_files:
+        key = key_by_upload_file_id.get(upload_file.id)
+        if key is None or not is_judgeable_mime(getattr(upload_file, "mime_type", None)):
+            continue
+        size = getattr(upload_file, "size", None)
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            continue
+        sizes[key] = size
+    return sizes
+
+
+def _load_image_prompt_contents(
+    *,
+    keys: Sequence[str],
+    tenant_id: str,
+    session: Session | None,
+    image_detail: Any,
+) -> dict[str, PromptMessageContentUnionTypes]:
+    """把一批图片 key 转成视觉模型可读的 prompt 内容。
+
+    复用 :data:`_file_access_controller` 与 ``file_manager.to_prompt_message_content``，
+    因此 ``TRANSCRIBE_IMAGE_DETAIL`` 等既有配置天然生效；取不到内容的 key 直接剔除，
+    由 :func:`judge_images` 视作"该图保留"（fail-open）。
+    """
+    contents: dict[str, PromptMessageContentUnionTypes] = {}
+    for key in keys:
+        upload_file_id = _match_upload_file_id(key)
+        if not upload_file_id:
+            continue
+
+        mapping = {
+            "upload_file_id": upload_file_id,
+            "transfer_method": FileTransferMethod.LOCAL_FILE.value,
+            "type": FileType.IMAGE.value,
+        }
+        try:
+            file_obj = build_from_mapping(
+                mapping=mapping,
+                tenant_id=tenant_id,
+                access_controller=_file_access_controller,
+            )
+            contents[key] = file_manager.to_prompt_message_content(file_obj, image_detail_config=image_detail)
+        except Exception:
+            logger.warning("图片 %s 转换为 prompt 内容失败，跳过判定。", upload_file_id, exc_info=True)
+            continue
+    return contents
+
+
+def _image_contexts(documents: Sequence[Document], occurrences: Mapping[str, int]) -> dict[str, str]:
+    """为每张图片构造上下文：出现位置 + 出现处附近的正文节选。
+
+    上下文只依赖"图片链接周边的正文"，因此对单 Document 的格式（docx / xlsx / txt）
+    同样有效 —— 这正是频率启发式完全不生效、而视觉判定仍能救回来的场景。
+    """
+    indexes_by_key: dict[str, list[int]] = {}
+    for index, document in enumerate(documents):
+        text = document.page_content or ""
+        if not text.strip():
+            continue
+        for key in {_url_key(url) for url in _image_urls_in_text(text)}:
+            if key:
+                indexes_by_key.setdefault(key, []).append(index)
+
+    contexts: dict[str, str] = {}
+    for key in occurrences:
+        indexes = indexes_by_key.get(key)
+        if not indexes:
+            continue
+        contexts[key] = _render_image_context(key, indexes, documents)
+    return contexts
+
+
+def _render_image_context(key: str, indexes: Sequence[int], documents: Sequence[Document]) -> str:
+    """渲染单张图片的上下文文本（出现位置 + 附近正文节选）。"""
+    labels = [_position_label(documents[index].metadata, index) for index in indexes[:_CONTEXT_POSITIONS_MAX]]
+    shown = "、".join(labels)
+    if len(indexes) > _CONTEXT_POSITIONS_MAX:
+        shown += " 等位置"
+    lines = [f"出现位置：{shown}，共 {len(indexes)} 处出现。"]
+
+    excerpts: list[str] = []
+    for index in indexes[:_CONTEXT_EXCERPTS_MAX]:
+        text = (documents[index].page_content or "").strip()
+        if not text:
+            continue
+        excerpt = _nearby_excerpt(text, key)
+        if excerpt:
+            excerpts.append(f"{_position_label(documents[index].metadata, index)}：{excerpt}")
+    if excerpts:
+        lines.append("出现位置附近的正文节选：" + " / ".join(excerpts))
+    else:
+        lines.append("出现位置附近的正文节选：（这些位置没有文字）")
+    return "\n".join(lines)
+
+
+def _nearby_excerpt(text: str, key: str) -> str:
+    """取图片链接前后的一小段正文，并剥掉链接语法本身。"""
+    position = text.find(key)
+    if position < 0:
+        start, end = 0, _CONTEXT_WINDOW_CHARS
+    else:
+        start = max(0, position - _CONTEXT_WINDOW_CHARS)
+        end = min(len(text), position + _CONTEXT_WINDOW_CHARS)
+
+    excerpt = _MARKDOWN_IMAGE_PATTERN.sub("", text[start:end])
+    excerpt = re.sub(r"\s+", " ", excerpt).strip()
+    if len(excerpt) > _CONTEXT_CHARS_PER_EXCERPT:
+        excerpt = excerpt[:_CONTEXT_CHARS_PER_EXCERPT] + "…"
+    return excerpt
+
+
+def _position_label(metadata: Mapping[str, Any] | None, fallback_index: int) -> str:
+    """给出现位置一个人话标签：优先页码，其次是行号，都没有则按段落序号。"""
+    if metadata:
+        page = _as_index(metadata.get("page"))
+        if page is not None:
+            return f"第 {page + _page_offset()} 页"
+        row = _as_index(metadata.get("row"))
+        if row is not None:
+            return f"第 {row + _page_offset()} 行"
+    return f"第 {fallback_index + 1} 段"
 
 
 def _decorative_image_keys(documents: Sequence[Document]) -> set[str]:
@@ -678,6 +921,11 @@ def _resolve_image_detail() -> Any:
     if detail == "high":
         return _DETAIL_ENUM.HIGH
     return _DETAIL_ENUM.LOW
+
+
+def _decorative_judge_enabled() -> bool:
+    """装饰图"视觉判定"开关；默认开启，关闭后回退到廉价的频率启发式。"""
+    return bool(getattr(dify_config, "TRANSCRIBE_DECORATIVE_JUDGE", True))
 
 
 def _max_chars_per_chunk() -> int:
