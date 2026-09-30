@@ -1,178 +1,153 @@
-![cover-v5-optimized](./images/GitHub_README_if.png)
+# Dify 1.17.0 · PPTX 原生解析与 Track A 多模态转写
 
-<p align="center">
-  <a href="https://cloud.dify.ai">Dify Cloud</a> ·
-  <a href="https://docs.dify.ai/getting-started/install-self-hosted">Self-hosting</a> ·
-  <a href="https://docs.dify.ai">Documentation</a> ·
-  <a href="https://dify.ai/pricing">Dify edition overview</a>
-</p>
+把上传的文档先交给视觉语言模型转写成统一的 Markdown，再进入 Dify 原有的清洗与向量化流程；原文中的图片链接逐字保留，前端渲染不受影响。
 
-<p align="center">
-    <a href="https://dify.ai" target="_blank">
-        <img alt="Static Badge" src="https://img.shields.io/badge/Product-F04438"></a>
-    <a href="https://dify.ai/pricing" target="_blank">
-        <img alt="Static Badge" src="https://img.shields.io/badge/free-pricing?logo=free&color=%20%23155EEF&label=pricing&labelColor=%20%23528bff"></a>
-    <a href="https://discord.gg/FngNHpbcY7" target="_blank">
-        <img src="https://img.shields.io/discord/1082486657678311454?logo=discord&labelColor=%20%235462eb&logoColor=%20%23f5f5f5&color=%20%235462eb"
-            alt="chat on Discord"></a>
-    <a href="https://reddit.com/r/difyai" target="_blank">
-        <img src="https://img.shields.io/reddit/subreddit-subscribers/difyai?style=plastic&logo=reddit&label=r%2Fdifyai&labelColor=white"
-            alt="join Reddit"></a>
-    <a href="https://twitter.com/intent/follow?screen_name=dify_ai" target="_blank">
-        <img src="https://img.shields.io/twitter/follow/dify_ai?logo=X&color=%20%23f5f5f5"
-            alt="follow on X(Twitter)"></a>
-    <a href="https://www.linkedin.com/company/langgenius/" target="_blank">
-        <img src="https://custom-icon-badges.demolab.com/badge/LinkedIn-0A66C2?logo=linkedin-white&logoColor=fff"
-            alt="follow on LinkedIn"></a>
-    <a href="https://hub.docker.com/u/langgenius" target="_blank">
-        <img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/langgenius/dify-web?labelColor=%20%23FDB062&color=%20%23f79009"></a>
-    <a href="https://github.com/langgenius/dify/graphs/commit-activity" target="_blank">
-        <img alt="Commits last month" src="https://img.shields.io/github/commit-activity/m/langgenius/dify?labelColor=%20%2332b583&color=%20%2312b76a"></a>
-    <a href="https://github.com/langgenius/dify/" target="_blank">
-        <img alt="Issues closed" src="https://img.shields.io/github/issues-search?query=repo%3Alanggenius%2Fdify%20is%3Aclosed&label=issues%20closed&labelColor=%20%237d89b0&color=%20%235d6b98"></a>
-    <a href="https://github.com/langgenius/dify/discussions/" target="_blank">
-        <img alt="Discussion posts" src="https://img.shields.io/github/discussions/langgenius/dify?labelColor=%20%239b8afb&color=%20%237a5af8"></a>
-    <a href="https://insights.linuxfoundation.org/project/langgenius-dify" target="_blank">
-        <img alt="LFX Health Score" src="https://insights.linuxfoundation.org/api/badge/health-score?project=langgenius-dify"></a>
-    <a href="https://insights.linuxfoundation.org/project/langgenius-dify" target="_blank">
-        <img alt="LFX Contributors" src="https://insights.linuxfoundation.org/api/badge/contributors?project=langgenius-dify"></a>
-    <a href="https://insights.linuxfoundation.org/project/langgenius-dify" target="_blank">
-        <img alt="LFX Active Contributors" src="https://insights.linuxfoundation.org/api/badge/active-contributors?project=langgenius-dify"></a>
-</p>
+这个仓库是 **Dify 1.17.0 的 fork**，在官方 `1.17.0` 标签之上叠加了 **6 个提交**。它不是一份一次性的大 diff，而是刻意按演进顺序切分的：每个提交都能独立读懂、独立回退，`git show` 看到的就是当时真实的改动与当时的取舍，包括中途走错又修回来的地方。
 
-<p align="center">
-  <a href="./README.md"><img alt="README in English" src="https://img.shields.io/badge/English-d9d9d9"></a>
-  <a href="./docs/zh-TW/README.md"><img alt="繁體中文文件" src="https://img.shields.io/badge/繁體中文-d9d9d9"></a>
-  <a href="./docs/zh-CN/README.md"><img alt="简体中文文件" src="https://img.shields.io/badge/简体中文-d9d9d9"></a>
-  <a href="./docs/ja-JP/README.md"><img alt="日本語のREADME" src="https://img.shields.io/badge/日本語-d9d9d9"></a>
-  <a href="./docs/es-ES/README.md"><img alt="README en Español" src="https://img.shields.io/badge/Español-d9d9d9"></a>
-  <a href="./docs/fr-FR/README.md"><img alt="README en Français" src="https://img.shields.io/badge/Français-d9d9d9"></a>
-  <a href="./docs/tlh/README.md"><img alt="README tlhIngan Hol" src="https://img.shields.io/badge/Klingon-d9d9d9"></a>
-  <a href="./docs/ko-KR/README.md"><img alt="README in Korean" src="https://img.shields.io/badge/한국어-d9d9d9"></a>
-  <a href="./docs/ar-SA/README.md"><img alt="README بالعربية" src="https://img.shields.io/badge/العربية-d9d9d9"></a>
-  <a href="./docs/tr-TR/README.md"><img alt="Türkçe README" src="https://img.shields.io/badge/Türkçe-d9d9d9"></a>
-  <a href="./docs/vi-VN/README.md"><img alt="README Tiếng Việt" src="https://img.shields.io/badge/Ti%E1%BA%BFng%20Vi%E1%BB%87t-d9d9d9"></a>
-  <a href="./docs/de-DE/README.md"><img alt="README in Deutsch" src="https://img.shields.io/badge/German-d9d9d9"></a>
-  <a href="./docs/it-IT/README.md"><img alt="README in Italiano" src="https://img.shields.io/badge/Italiano-d9d9d9"></a>
-  <a href="./docs/pt-BR/README.md"><img alt="README em Português do Brasil" src="https://img.shields.io/badge/Portugu%C3%AAs%20do%20Brasil-d9d9d9"></a>
-  <a href="./docs/sl-SI/README.md"><img alt="README Slovenščina" src="https://img.shields.io/badge/Sloven%C5%A1%C4%8Dina-d9d9d9"></a>
-  <a href="./docs/bn-BD/README.md"><img alt="README in বাংলা" src="https://img.shields.io/badge/বাংলা-d9d9d9"></a>
-  <a href="./docs/hi-IN/README.md"><img alt="README in हिन्दी" src="https://img.shields.io/badge/Hindi-d9d9d9"></a>
-</p>
+- **基线**：`09a855dcef` — `chore: bump version to 1.17.0 (#41247)`，即 `1.17.0` 标签
+- **叠加**：6 个提交，涉及 13 个文件（12 个 Track A + 1 个相互独立的 weaviate 修复）
+- **范围**：只有 **Track A**（多模态转写）；语义分块（Track B）不在本仓库
+- 上游 README 已移到 [`README.upstream.md`](./README.upstream.md)
 
-Dify is an open-source LLM app development platform. Its intuitive interface combines AI workflow, RAG pipeline, agent capabilities, model management, observability features (including [Opik](https://www.comet.com/docs/opik/integrations/dify), [Langfuse](https://docs.langfuse.com), and [Arize Phoenix](https://docs.arize.com/phoenix)) and more, letting you quickly go from prototype to production. Here's a list of the core features:
+## 提交演进
 
-## Quick start
-
-> Before installing Dify, make sure your machine meets the following minimum system requirements:
->
-> - CPU >= 2 Core
-> - RAM >= 4 GiB
-
-<br/>
-
-The easiest way to start the Dify server is through [Docker Compose](docker/docker-compose.yaml). Before running Dify with the following commands, make sure that [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2.24.0 or later are installed on your machine:
+| # | commit | 主题 | 规模 |
+| --- | --- | --- | --- |
+| 1 | `857adea984` | feat(rag): 引入 PPTX 原生解析器并预留转写接入点 | 4 files, +221/-1 |
+| 2 | `34c02ebf25` | feat(rag): 接入 Track A 转写入口，收敛办公扩展名白名单 | 3 files, +84/-61 |
+| 3 | `72f822dbbf` | fix(rag): 补回 pptx 原生分支并显式断言 upload_file 必填 | 1 file, +5/-0 |
+| 4 | `828a119eb9` | feat(rag): Track A 多模态转写服务落地，双轨制改造主体 | 9 files, +1538/-51 |
+| 5 | `dc07e90e69` | feat(rag): 装饰性图片改走视觉模型判定，Track A 定稿 | 3 files, +588/-11 |
+| 6 | `8b3ee8486b` | fix(vdb): 修复 weaviate 删除失效导致的旧向量残留 | 1 file, +48/-11 |
 
 ```bash
-cd dify
-cd docker
-cp .env.example .env
-docker compose up -d
+git log --oneline 09a855dcef..HEAD
+git show 828a119eb9                 # 主体阶段
+git diff 09a855dcef..HEAD --stat    # 全量改动
 ```
 
-After running, you can access the Dify dashboard in your browser at [http://localhost/install](http://localhost/install) and start the initialization process.
+## 逐阶段说明
 
-#### Seeking help
+### 1 · 先把 pptx 读进来（`857adea984`）
 
-Please refer to our [FAQ](https://docs.dify.ai/getting-started/install-self-hosted/faqs) if you encounter problems setting up Dify. Reach out to [the community and us](#community--contact) if you are still having issues.
+新增 `api/core/rag/extractor/pptx_extractor.py`（201 行）：用 python-pptx 遍历每页形状，抽出文本框与备注，保留图片引用，统一产出 Dify 的 `Document`。`extract_processor.py` 注册 `.pptx` 分支，`constants/__init__.py` 的扩展名白名单补上 `pptx`。
 
-> If you'd like to contribute to Dify or do additional development, refer to our [guide to deploying from source code](https://docs.dify.ai/getting-started/install-self-hosted/local-source-code)
+这一阶段也如实带进了两处**与转写无关**的东西：`feature/__init__.py` 新增的 `WEBSOCKET_MAX_HTTP_BUFFER_SIZE`（Engine.IO 的 HTTP 缓冲区，用于协作请求的大 payload），以及一处拼写回归 `Unstructure  dWordExtractor`。两者都在后续阶段被处理掉，保留原样是为了让演进轨迹真实。
 
-## Key features
+### 2 · 找到接入点（`34c02ebf25`）
 
-**1. Workflow**:
-Build and test powerful AI workflows on a visual canvas, leveraging all the following features and beyond.
+修掉上一阶段的拼写回归，把白名单从 `pptx / ppt / doc` 收敛回只留 `pptx`（`ppt` 是老二进制格式，python-pptx 读不了）。
 
-**2. Comprehensive model support**:
-Seamless integration with hundreds of proprietary / open-source LLMs from dozens of inference providers and self-hosted solutions, covering GPT, Mistral, Llama3, and any OpenAI API-compatible models. A full list of supported model providers can be found [here](https://docs.dify.ai/getting-started/readme/model-providers).
+真正的重点是 `extract_processor.py`：撤掉 `.pptx` 直出分支，改为在原生 extractor 产出 `list[Document]` 之后接入 `transcribe_documents()`。选这个位置的理由写在代码注释里 —— 它是 paragraph / parent_child / qa 三个 index processor 的唯一收口，且此时图片已经落存储、`UploadFile` 已经入库，转写可以直接把 `![image](/files/<id>/file-preview)` 转成视觉模型可读的输入。接入点外围有三层防御：函数内延迟导入规避循环依赖、外层 `try` 兜底、`transcribe_documents()` 自身保证不抛异常。
 
-![providers-v5](https://github.com/langgenius/dify/assets/13230914/5a17bdbe-097a-4100-8363-40255b70f6e3)
+`pptx_extractor.py` 同时补齐模块与类 docstring（含 Args）、`_closed` / `_session` 类型注解，`session` 改为 keyword-only，`extract()` 收敛成单行。
 
-**3. Prompt IDE**:
-Intuitive interface for crafting prompts, comparing model performance, and adding additional features such as text-to-speech to a chat-based app.
+### 3 · 补回被顺手删掉的分支（`72f822dbbf`）
 
-**4. RAG Pipeline**:
-Extensive RAG capabilities that cover everything from document ingestion to retrieval, with out-of-box support for text extraction from PDFs, PPTs, and other common document formats.
+阶段 2 撤 `.pptx` 直出分支时，`upload_file` 的显式前置条件也跟着消失了。这里恢复 `.pptx` 原生分支，并加 `assert upload_file is not None, "upload_file is required"`，让约束写在入口而不是靠下游的 None 检查兜底。
 
-**5. Agent capabilities**:
-You can define agents based on LLM Function Calling or ReAct, and add pre-built or custom tools for the agent. Dify provides 50+ built-in tools for AI agents, such as Google Search, DALL·E, Stable Diffusion and WolframAlpha.
+### 4 · 主体：多模态转写服务（`828a119eb9`）
 
-**6. LLMOps**:
-Monitor and analyze application logs and performance over time. You could continuously improve prompts, datasets, and models based on production data and annotations.
+新增 `api/core/rag/extractor/transcribe_service.py`（690 行），是整个改造的核心：
 
-**7. Backend-as-a-Service**:
-All of Dify's offerings come with corresponding APIs, so you could effortlessly integrate Dify into your own business logic.
+- 以**整篇文档**为单位转写，而不是以 chunk 为单位，保证跨页、跨块的上下文连贯
+- 对外只暴露 `is_transcription_enabled()` 与 `transcribe_documents()`
+- `SKIP_EXTENSIONS` 跳过 `.md / .markdown / .mdx`（本来就是 Markdown，无需转写）
+- `_split_chunks()` 按行累积、绝不切断单行，超长文档按 `TRANSCRIBE_MAX_CHARS_PER_CHUNK` 分片
+- 用 `<!-- page: N -->` 标注页码（配合 `TRANSCRIBE_PAGE_OFFSET`），表格行用 `<!-- row: N -->`
+- `_CODE_FENCE_PATTERN` 剥掉模型自己加上去的最外层代码围栏
 
-## Using Dify
+同阶段配套：
 
-- **Cloud <br/>**
-  We host a [Dify Cloud](https://dify.ai) service for anyone to try with zero setup. It provides all the capabilities of the self-deployed version, and includes 200 free GPT-4 calls in the sandbox plan. If you run into issues with Dify Cloud, [contact our Cloud support team](mailto:cloud@dify.ai?subject=%5BGitHub%5DDify%20Cloud%20Support).
+| 文件 | 变化 |
+| --- | --- |
+| `pptx_extractor.py` | 206 → 706 行。`_IMAGE_PLACEHOLDER` + `_render_body` 把图片回填原位；`_save_image` / `_persist_images` 先按内容 sha1 去重；装饰图视觉判定两遍（每批 ≤4 张、≤4 MB）；`_shape_sort_key` 稳定排序；`_table_to_markdown` 还原表格 |
+| `pdf_extractor.py` | 内容 sha1 跨整篇去重，同一个 Logo 不再逐页重复落盘 |
+| `fixed_text_splitter.py` | 149 → 280 行。合并式切分 + Markdown 结构感知：ATX 标题栈、`【章节路径】` 前缀注入、` > ` 分隔 |
+| `index_processor_base.py` / `indexing_runner.py` | 各 2 行，切分调用处传入 `markdown_aware=True` |
+| `prompts.py` | 新增 `DEFAULT_TRANSCRIBE_PROMPT`，10 条硬约束 |
+| `feature/__init__.py` | 新增 `TRANSCRIBE_*` 配置项，并撤销阶段 1 夹带的 `WEBSOCKET_MAX_HTTP_BUFFER_SIZE` |
+| `test_text_splitter.py` | 6 个新用例 |
 
-- **Self-hosting Dify Community Edition<br/>**
-  Quickly get Dify running in your environment with this [starter guide](#quick-start).
-  Use our [documentation](https://docs.dify.ai) for further references and more in-depth instructions.
+### 5 · 装饰图不再靠猜（`dc07e90e69`）
 
-- **Dify for enterprise / organizations<br/>**
-  We provide additional enterprise-centric features. [Send us an email](mailto:business@dify.ai?subject=%5BGitHub%5DBusiness%20License%20Inquiry) to discuss your enterprise needs. <br/>
+第一版判定装饰图只用一条启发式：同一张图跨页重复出现。它覆盖不全 —— 只在封面出现一次的 Logo、只出现在 2/5 页的水印、页脚装饰线条都会漏掉，而这些图同样会吃掉视觉模型的输入预算、把注意力引向无意义内容。
 
-## Staying ahead
+于是新增 `decorative_image_judge.py`（322 行），把「图片内容 + 所在位置 + 附近正文」一起交给视觉模型做 decorative / meaningful 二分类：候选先按 MIME 与体积过滤（单张 >1.5 MB 跳过，候选上限 60 张），每批 ≤4 张且 ≤4 MB，提示词与 `PptxExtractor` 同一口径。全链路 fail-open —— 单批失败只丢该批、解析不出判定等价全部保留、整体不可用返回 `None` 交调用方决定。
 
-Star Dify on GitHub and be instantly notified of new releases.
+`transcribe_service.py`（690 → 938 行）的 `_drop_decorative_images()` 相应改为**视觉优先、启发式兜底**：取到判定就用判定，取不到才回落到「跨页重复」的频率启发式。开关是 `TRANSCRIBE_DECORATIVE_JUDGE`（默认 `true`）。
 
-<img width="1344" height="720" alt="star" src="https://github.com/user-attachments/assets/dcd086d1-af0f-471b-ae52-1ad2fa040595" />
+### 6 · 顺带修掉的 weaviate 删除失效（`8b3ee8486b`）
 
-## Advanced Setup
+与 Track A 没有依赖，可以单独摘掉。原实现写入时用内容哈希（UUID5）当对象 id，删除时收到的却是 Dify 节点 id，两者永远对不上 —— 删除事实上无效，重复索引会不断累积无人引用的残留向量。改动后写入优先取 `metadata["doc_id"]` 作为对象 id，删除按 `doc_id` 属性批量清理（每批 100 条），对 UUID 形态的入参保留旧的 `by_id` 行为，删除失败统一打 `warning` 而不是静默吞掉。
 
-For custom configuration, observability, and deployment options, see [Advanced Setup](docs/ADVANCED_SETUP.md).
+## 设计上的三条硬约束
 
-## Contributing
+1. **永不向上抛异常。** 模型超时、provider 未配置、返回内容不合规，一律拦下并回落到原生解析结果。
+2. **图片链接必须逐字符保留。** 转写输出若丢了原文的图片链接，该结果整体被丢弃。唯一例外是装饰性图片 —— 它们在切分前就被剥离，因此不进这条校验。
+3. **不得导入 `ParagraphIndexProcessor`。** 会形成循环导入，所以图片正则在这套代码里独立实现。
 
-Dify welcomes contributions of all kinds:
+## 配置
 
-- **Code**: Read the [Contribution Guide](CONTRIBUTING.md), then browse [good first issues](https://github.com/langgenius/dify/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22).
-- **Ideas and feedback**: Start or join a [GitHub Discussion](https://github.com/langgenius/dify/discussions).
-- **Translations**: Follow the [internationalization guide](web/i18n-config/README.md) to add or update a locale.
-- **Community**: Share the apps you build, help other users, and spread the word about Dify.
+把下面这些追加到 `docker/.env`（该文件被 `docker/.gitignore` 的 `*.env` 规则排除，不在仓库内）：
 
-### Contributors
+```
+TRANSCRIBE_ENABLED=true
+TRANSCRIBE_MODEL_PROVIDER=langgenius/openai_api_compatible/openai_api_compatible
+TRANSCRIBE_MODEL_NAME=qwen3.8-27b
+TRANSCRIBE_LANGUAGE=中文
+TRANSCRIBE_IMAGE_DETAIL=low
+TRANSCRIBE_DECORATIVE_JUDGE=true
+TRANSCRIBE_MAX_CHARS_PER_CHUNK=12000
+TRANSCRIBE_MAX_CHUNKS=0
+TRANSCRIBE_PAGE_OFFSET=1
+```
 
-<a href="https://github.com/langgenius/dify/graphs/contributors">
-  <img alt="Dify contributors" src="https://contrib.rocks/image?repo=langgenius/dify" />
-</a>
+| 变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| `TRANSCRIBE_ENABLED` | `false` | 总开关，关闭时 `transcribe_documents()` 直接返回 `None`，走原生解析 |
+| `TRANSCRIBE_MODEL_PROVIDER` | 空 | provider id，需与控制台中已配置的 provider 一致 |
+| `TRANSCRIBE_MODEL_NAME` | 空 | 模型名，需是所选 provider 下的视觉模型 |
+| `TRANSCRIBE_PROMPT` | 空 | 自定义提示词，留空使用 `DEFAULT_TRANSCRIBE_PROMPT`，支持 `{language}` 占位 |
+| `TRANSCRIBE_LANGUAGE` | 空 | 输出语言，留空跟随原文 |
+| `TRANSCRIBE_TEMPERATURE` | 空 | 采样温度，留空用模型默认 |
+| `TRANSCRIBE_IMAGE_DETAIL` | `low` | 图片细节档位 |
+| `TRANSCRIBE_DECORATIVE_JUDGE` | `true` | 是否让视觉模型逐张判定装饰性图片（Logo、水印、页眉页脚配图）。关闭后回退到「同一图片跨页重复出现」的廉价启发式 |
+| `TRANSCRIBE_MAX_CHARS_PER_CHUNK` | `12000` | 超长文档的分片阈值，转写按片进行 |
+| `TRANSCRIBE_MAX_CHUNKS` | `0` | 分片数上限，`0` 表示不限制 |
+| `TRANSCRIBE_PAGE_OFFSET` | `1` | 页码起始值，用于生成 `<!-- page: n -->` 标记 |
 
-## Community & contact
+`TRANSCRIBE_MODEL_PROVIDER` 与 `TRANSCRIBE_MODEL_NAME` 留空时转写会被跳过并回落到原生解析，不会报错。
 
-Choose the channel that best fits your question:
+## 怎么验证
 
-- [GitHub Discussions](https://github.com/langgenius/dify/discussions): Get help, share feedback, and propose ideas.
-- [GitHub Issues](https://github.com/langgenius/dify/issues): Report reproducible bugs and track engineering work. Read the [Contribution Guide](CONTRIBUTING.md) before opening one.
-- [Discord](https://discord.gg/FngNHpbcY7): Chat in real time, share your apps, and connect with other Dify users.
-- [X](https://x.com/dify_ai): Follow Dify for release news and project updates.
+```bash
+# 整体改动范围
+git diff 09a855dcef..HEAD --stat
 
-## Star History
+# 开关是否生效
+docker compose exec api python -c "from configs import dify_config; print(dify_config.TRANSCRIBE_ENABLED)"
 
-<a href="https://star-history.dera.page/#langgenius/dify&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=langgenius/dify&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=langgenius/dify&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=langgenius/dify&type=date&legend=top-left" />
- </picture>
-</a>
+# 切分器用例
+docker compose exec api uv run pytest tests/unit_tests/core/rag/splitter/test_text_splitter.py -q
+```
 
-## Security disclosure
+功能侧：在知识库中上传一份带图片的 pptx 或 pdf，索引完成后查看 api 日志里的转写记录，并确认文档分段中出现了 `【章节路径】` 前缀与 `<!-- page: n -->` 标记。
 
-To protect your privacy, please avoid posting security issues on GitHub. Instead, report issues to security@dify.ai, and our team will respond with detailed answer.
+配置项由 api 与 worker 读取，改完要重建这两个服务：
 
-## License
+```bash
+docker compose build api worker
+docker compose up -d api worker
+```
 
-This repository is licensed under the [Dify Open Source License](LICENSE), based on Apache 2.0 with additional conditions.
+## 边界
+
+- **不含 Track B。** `fixed_text_splitter.py` 里没有任何语义分块逻辑。`index_processor_base.py` 与 `indexing_runner.py` 中留有 4 处 `Track A+B 改造` 注释，是历史命名遗留，不影响行为。
+- **失败不阻断，是刻意的设计选择**，不是缺失的容错。
+- **装饰图判定有额外开销。** 转写侧每篇文档最多多出 15 次视觉模型调用（每批最多 4 张图），单张超过 1.5 MB 或候选超过 60 张的部分会被跳过。想省掉这笔开销就把 `TRANSCRIBE_DECORATIVE_JUDGE` 设为 `false`。
+- **只针对 1.17.0。** 上游后续版本若改动了 `extract_processor.py` 或 index processor，需要重新核对上下文。
+
+## 与上游的关系
+
+基于 [Dify](https://github.com/langgenius/dify) `1.17.0`（commit `09a855dcef`）。本仓库只叠加了上述 6 个提交，其余内容与上游保持一致；许可证沿用上游，见仓库根目录的 `LICENSE`。
