@@ -1,3 +1,4 @@
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -19,8 +20,8 @@ from core.rag.extractor.jina_reader_extractor import JinaReaderWebExtractor
 from core.rag.extractor.markdown_extractor import MarkdownExtractor
 from core.rag.extractor.notion_extractor import NotionExtractor
 from core.rag.extractor.pdf_extractor import PdfExtractor
-from core.rag.extractor.text_extractor import TextExtractor
 from core.rag.extractor.pptx_extractor import PptxExtractor
+from core.rag.extractor.text_extractor import TextExtractor
 from core.rag.extractor.unstructured.unstructured_doc_extractor import UnstructuredWordExtractor
 from core.rag.extractor.unstructured.unstructured_eml_extractor import UnstructuredEmailExtractor
 from core.rag.extractor.unstructured.unstructured_epub_extractor import UnstructuredEpubExtractor
@@ -34,6 +35,9 @@ from core.rag.extractor.word_extractor import WordExtractor
 from core.rag.models.document import Document
 from extensions.ext_storage import storage
 from models.model import UploadFile
+
+logger = logging.getLogger(__name__)
+
 
 SUPPORT_URL_CONTENT_TYPES = ["application/pdf", "text/plain", "application/json"]
 USER_AGENT = (
@@ -166,7 +170,7 @@ class ExtractProcessor:
                             file_path, upload_file.tenant_id, upload_file.created_by, session=session
                         )
                     elif file_extension == ".doc":
-                        extractor = Unstructure  dWordExtractor(file_path, unstructured_api_url, unstructured_api_key)
+                        extractor = UnstructuredWordExtractor(file_path, unstructured_api_url, unstructured_api_key)
                     elif file_extension == ".csv":
                         extractor = CSVExtractor(file_path, autodetect_encoding=True)
                     elif file_extension == ".msg":
@@ -213,15 +217,25 @@ class ExtractProcessor:
                         extractor = CSVExtractor(file_path, autodetect_encoding=True)
                     elif file_extension == ".epub":
                         extractor = UnstructuredEpubExtractor(file_path)
-                    elif file_extension == ".pptx":
-                        assert upload_file is not None
-                        extractor = PptxExtractor(
-                            file_path, upload_file.tenant_id, upload_file.created_by, session=session
-                        )    
                     else:
                         # txt
                         extractor = TextExtractor(file_path, autodetect_encoding=True)
-                return extractor.extract()
+                documents = extractor.extract()
+                # 视觉模型转写接入点：延迟导入以规避与 index processor 的循环依赖，
+                # 转写失败时回退原生解析结果。
+                try:
+                    from core.rag.extractor.transcribe_service import transcribe_documents
+
+                    transcribed = transcribe_documents(
+                        documents=documents,
+                        upload_file=upload_file,
+                        file_extension=file_extension,
+                        session=session,
+                    )
+                except Exception:
+                    logger.exception("转写入口异常，回退到原生解析结果。")
+                    transcribed = None
+                return transcribed or documents
         elif extract_setting.datasource_type == DatasourceType.NOTION:
             assert extract_setting.notion_info is not None, "notion_info is required"
             extractor = NotionExtractor(

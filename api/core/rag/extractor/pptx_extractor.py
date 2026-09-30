@@ -1,3 +1,11 @@
+"""PowerPoint (.pptx) document extractor used for RAG ingestion.
+
+Load ``.pptx`` files into Markdown-ish text with embedded image links. Each
+slide becomes a ``## Slide N`` section, tables become Markdown tables, and
+pictures are persisted through the storage layer so the frontend can still
+render them after the file has been vectorized.
+"""
+
 import hashlib
 import logging
 import mimetypes
@@ -23,46 +31,44 @@ logger = logging.getLogger(__name__)
 
 
 class PptxExtractor(BaseExtractor):
-    """Load ``.pptx`` files into Markdown-ish text with embedded image links."""
+    """Load ``.pptx`` files into Markdown-ish text with embedded image links.
 
-    def __init__(
-        self,
-        file_path: str,
-        tenant_id: str,
-        user_id: str,
-        *,
-        session: Session | None = None,
-    ):
+    Args:
+        file_path: Path to the file to load.
+        tenant_id: Tenant that owns the extracted images.
+        user_id: Account used as the creator of the extracted images.
+        session: Session used to persist extracted images.
+    """
+
+    _closed: bool
+    _session: Session | None
+
+    def __init__(self, file_path: str, tenant_id: str, user_id: str, *, session: Session | None = None):
+        """Initialize with file path."""
         self._closed = False
         self.file_path = file_path
         self.tenant_id = tenant_id
         self.user_id = user_id
         self._session = session
+
         if "~" in self.file_path:
             self.file_path = os.path.expanduser(self.file_path)
+
         if not os.path.isfile(self.file_path):
             raise ValueError(f"File path {self.file_path} is not a valid file")
 
     @override
     def extract(self) -> list[Document]:
         content = self.parse_pptx(self.file_path)
-        return [
-            Document(
-                page_content=content,
-                metadata={"source": self.file_path},
-            )
-        ]
+        return [Document(page_content=content, metadata={"source": self.file_path})]
 
-    # ------------------------------------------------------------------ #
-    # image handling
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _image_key(blob: bytes) -> str:
         """Content hash used to deduplicate identical images."""
         return hashlib.sha1(blob).hexdigest()
 
     @staticmethod
-    def _shape_sort_key(shape):
+    def _shape_sort_key(shape) -> tuple[float, float]:
         """Order shapes by reading position: top first, then left."""
         try:
             return (shape.top or 0, shape.left or 0)
@@ -70,12 +76,7 @@ class PptxExtractor(BaseExtractor):
             return (0, 0)
 
     def _save_image(self, blob: bytes, ext: str) -> str:
-        """Persist one image to storage and return its Markdown link.
-
-        Mirrors ``WordExtractor._extract_images_from_docx`` in Dify 1.17.0 exactly:
-        let the model auto-assign ``UploadFile.id`` and reference that id in the URL,
-        add to the active session, and only commit at the end of ``parse_pptx``.
-        """
+        """Persist one image and return its Markdown link."""
         ext = (ext or "png").lstrip(".").lower()
         if ext == "jpg":
             ext = "jpeg"
@@ -101,7 +102,6 @@ class PptxExtractor(BaseExtractor):
             used_by=self.user_id,
             used_at=naive_utc_now(),
         )
-
         session = self._session or db.session
         session.add(upload_file)
 
@@ -110,10 +110,8 @@ class PptxExtractor(BaseExtractor):
         logger.info("PptxExtractor saved image key=%s id=%s", file_key, upload_file.id)
         return link
 
-    # ------------------------------------------------------------------ #
-    # content extraction
-    # ------------------------------------------------------------------ #
     def _table_to_markdown(self, table) -> str:
+        """Render a PowerPoint table as a Markdown table."""
         lines: list[str] = []
         for row_idx, row in enumerate(table.rows):
             cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
@@ -122,61 +120,70 @@ class PptxExtractor(BaseExtractor):
                 lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
         return "\n".join(lines)
 
-    def _process_shape(self, shape, out: list[str], image_cache: dict) -> None:
+    def _process_shape(self, shape, out: list[str], image_cache: dict[str, str]) -> None:
+        """Append the Markdown representation of one shape to ``out``."""
         try:
             shape_type = shape.shape_type
         except Exception:
             shape_type = None
 
-        # 1) Picture -> Markdown image link (deduped by content hash).
+        # 1) picture -> deduplicated Markdown image link
         if shape_type == MSO_SHAPE_TYPE.PICTURE:
             try:
                 image = shape.image
                 blob = image.blob
             except Exception:
-                logger.warning("Failed to read picture shape", exc_info=True)
+                logger.warning("PptxExtractor skipped an unreadable picture")
                 return
-            if not blob:
-                return
+
             key = self._image_key(blob)
             link = image_cache.get(key)
             if link is None:
                 try:
-                    link = self._save_image(blob, image.ext)
+                    link = self._save_image(blob, getattr(image, "ext", "png"))
                 except Exception:
-                    logger.exception("Failed to persist pptx image")
+                    logger.exception("PptxExtractor failed to persist an image")
                     return
                 image_cache[key] = link
             out.append(link)
             return
 
-        # 2) Table -> Markdown table.
+        # 2) table -> Markdown table
         if getattr(shape, "has_table", False):
             try:
-                out.append(self._table_to_markdown(shape.table))
+                markdown = self._table_to_markdown(shape.table)
             except Exception:
-                logger.warning("Failed to parse pptx table", exc_info=True)
+                logger.warning("PptxExtractor failed to render a table")
+                markdown = ""
+            if markdown:
+                out.append(markdown)
             return
 
-        # 3) Group -> recurse into children.
+        # 3) grouped shapes -> walk children
         if shape_type == MSO_SHAPE_TYPE.GROUP:
-            for child in shape.shapes:
-                self._process_shape(child, out, image_cache)
+            try:
+                for child in sorted(shape.shapes, key=self._shape_sort_key):
+                    self._process_shape(child, out, image_cache)
+            except Exception:
+                logger.warning("PptxExtractor failed to walk a group shape")
             return
 
-        # 4) Text frame (text box / autoshape with text).
+        # 4) text frame -> raw text
         if getattr(shape, "has_text_frame", False):
-            text = shape.text_frame.text.strip()
+            try:
+                text = (shape.text_frame.text or "").strip()
+            except Exception:
+                text = ""
             if text:
                 out.append(text)
             return
 
-        # 5) Chart / SmartArt / media / other graphic frame -> placeholder.
+        # 5) charts, embedded objects and other non-textual elements
         out.append("<!-- non-textual element -->")
 
     def parse_pptx(self, pptx_path: str) -> str:
         prs = Presentation(pptx_path)
-        image_cache: dict = {}
+        image_cache: dict[str, str] = {}
         slides: list[str] = []
 
         for slide_idx, slide in enumerate(prs.slides, start=1):
@@ -187,7 +194,6 @@ class PptxExtractor(BaseExtractor):
             slides.append(f"## Slide {slide_idx}\n{body}")
 
         content = "\n\n".join(slides)
-
         if self._session is None:
             db.session.commit()
 
@@ -197,5 +203,4 @@ class PptxExtractor(BaseExtractor):
             len(slides),
             len(image_cache),
         )
-
         return content
