@@ -133,6 +133,8 @@ class BaseIndexProcessor(ABC):
                 chunk_overlap=chunk_overlap,
                 fixed_separator=separator,
                 separators=["\n\n", "。", ". ", " ", ""],
+                # 开启合并式切分 + Markdown 结构感知（标题栈 / 章节路径）
+                markdown_aware=True,
                 embedding_model_instance=embedding_model_instance,
             )
         else:

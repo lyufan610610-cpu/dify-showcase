@@ -1,6 +1,7 @@
 """Abstract interface for document loader implementations."""
 
 import contextlib
+import hashlib
 import io
 import logging
 import uuid
@@ -67,6 +68,14 @@ class PdfExtractor(BaseExtractor):
         self._user_id = user_id
         self._file_cache_key = file_cache_key
         self._session = session
+        # sha1(image bytes) -> markdown link. Shared by every page of this document,
+        # so a logo or watermark repeated on each page is stored only once.
+        self._image_cache: dict[str, str] = {}
+
+    @staticmethod
+    def _image_key(blob: bytes) -> str:
+        """Content hash used to deduplicate identical images."""
+        return hashlib.sha1(blob).hexdigest()
 
     @override
     def extract(self) -> list[Document]:
@@ -121,6 +130,9 @@ class PdfExtractor(BaseExtractor):
         Extract images from a PDF page, save them to storage and database,
         and return markdown image links.
 
+        Images are deduplicated by content hash across the whole document, so a
+        logo or watermark repeated on every page yields a single stored file.
+
         Args:
             page: pypdfium2 page object.
 
@@ -157,6 +169,14 @@ class PdfExtractor(BaseExtractor):
                     if not image_ext or not mime_type:
                         continue
 
+                    cache_key = self._image_key(img_bytes)
+                    cached_link = self._image_cache.get(cache_key)
+                    if cached_link is not None:
+                        # The exact same image was already persisted for this document:
+                        # reuse its link instead of writing a duplicate file + record.
+                        image_content.append(cached_link)
+                        continue
+
                     file_uuid = str(uuid.uuid4())
                     file_key = "image_files/" + self._tenant_id + "/" + file_uuid + "." + image_ext
 
@@ -179,7 +199,9 @@ class PdfExtractor(BaseExtractor):
                         used_at=naive_utc_now(),
                     )
                     upload_files.append(upload_file)
-                    image_content.append(f"![image]({base_url}/files/{upload_file.id}/file-preview)")
+                    link = f"![image]({base_url}/files/{upload_file.id}/file-preview)"
+                    self._image_cache[cache_key] = link
+                    image_content.append(link)
                 except Exception as e:
                     logger.warning("Failed to extract image from PDF: %s", e)
                     continue

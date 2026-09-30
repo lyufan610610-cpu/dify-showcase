@@ -593,16 +593,6 @@ class HttpConfig(BaseSettings):
     def CONSOLE_CORS_ALLOW_ORIGINS(self) -> list[str]:
         return self.inner_CONSOLE_CORS_ALLOW_ORIGINS.split(",")
 
-    WEBSOCKET_MAX_HTTP_BUFFER_SIZE: PositiveInt = Field(
-        description=(
-            "Maximum Socket.IO / Engine.IO HTTP buffer size in bytes. "
-            "Large workflow collaboration payloads (sync_request graph snapshots) "
-            "exceed the Engine.IO default of 1 MiB and get rejected, which "
-            "disconnects the editor WebSocket. Default is 10 MiB."
-        ),
-        default=10 * 1024 * 1024,
-    )
-
     inner_WEB_API_CORS_ALLOW_ORIGINS: str = Field(
         description="",
         validation_alias=AliasChoices("WEB_API_CORS_ALLOW_ORIGINS"),
@@ -1252,6 +1242,67 @@ class RagEtlConfig(BaseSettings):
     SCARF_NO_ANALYTICS: str | None = Field(
         description="This is about whether to disable Scarf analytics in Unstructured library.",
         default="false",
+    )
+
+
+    # ------------------------------------------------------------------
+    # 多模态文档转写（Transcription）
+    # ------------------------------------------------------------------
+    TRANSCRIBE_ENABLED: bool = Field(
+        description="Whether to transcribe uploaded documents into Markdown by a "
+        "vision-language model before indexing.",
+        default=False,
+    )
+
+    TRANSCRIBE_MODEL_PROVIDER: str = Field(
+        description="Provider id used for transcription, e.g. "
+        "'langgenius/openai_api_compatible/openai_api_compatible'.",
+        default="",
+    )
+
+    TRANSCRIBE_MODEL_NAME: str = Field(
+        description="Model name used for transcription, e.g. 'qwen3.8-27b'.",
+        default="",
+    )
+
+    TRANSCRIBE_PROMPT: str = Field(
+        description="Custom transcription prompt. Empty means DEFAULT_TRANSCRIBE_PROMPT "
+        "is used. Supports the {language} placeholder.",
+        default="",
+    )
+
+    TRANSCRIBE_LANGUAGE: str = Field(
+        description="Target language of the transcription output. Empty means following "
+        "the source document.",
+        default="",
+    )
+
+    TRANSCRIBE_TEMPERATURE: float | None = Field(
+        description="Sampling temperature for transcription. None means provider default.",
+        default=None,
+    )
+
+    TRANSCRIBE_IMAGE_DETAIL: str = Field(
+        description="Image detail level passed to the vision model: 'low' or 'high'.",
+        default="low",
+    )
+
+    TRANSCRIBE_MAX_CHARS_PER_CHUNK: int = Field(
+        description="Max characters per transcription request; longer documents are split "
+        "on line boundaries.",
+        default=12000,
+    )
+
+    TRANSCRIBE_MAX_CHUNKS: int = Field(
+        description="Max chunks transcribed per document. 0 means unlimited; chunks beyond "
+        "the limit are kept as-is.",
+        default=0,
+    )
+
+    TRANSCRIBE_PAGE_OFFSET: int = Field(
+        description="Offset added to the 0-based page/row index reported by extractors when "
+        "emitting position markers.",
+        default=1,
     )
 
 
