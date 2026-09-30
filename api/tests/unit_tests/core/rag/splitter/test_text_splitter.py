@@ -881,14 +881,26 @@ class TestFixedRecursiveCharacterTextSplitter:
         assert splitter._chunk_overlap == 10
 
     def test_split_by_fixed_separator(self):
-        """Test splitting by fixed separator first."""
+        """小块会被合并到 chunk_size 上限内，而不是各自成段。"""
         text = "Part 1\n\nPart 2\n\nPart 3"
         splitter = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=100, chunk_overlap=10)
 
         result = splitter.split_text(text)
 
-        assert len(result) >= 3
+        # 三段都远小于 chunk_size，应被合并回一段且内容不丢失
+        assert len(result) == 1
+        assert result[0] == text
         assert all(isinstance(chunk, str) for chunk in result)
+
+    def test_split_by_fixed_separator_respects_chunk_size(self):
+        """合并不得突破 chunk_size 上限。"""
+        text = "Part 1\n\nPart 2\n\nPart 3"
+        splitter = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=13, chunk_overlap=0)
+
+        result = splitter.split_text(text)
+
+        assert len(result) > 1
+        assert all(len(chunk) <= 13 for chunk in result)
 
     def test_recursive_split_when_chunk_too_large(self):
         """Test recursive splitting when chunks exceed size limit."""
@@ -1053,6 +1065,14 @@ class TestFixedRecursiveCharacterTextSplitter:
         separator = "\\n\\n---\\n\\n"
         splitter = FixedRecursiveCharacterTextSplitter(fixed_separator=separator)
         chunks = splitter.split_text(data)
+        # 合并式切分：默认 chunk_size=4000，两段被重新合并，内容不丢失
+        assert chunks == [data]
+
+    def test_double_slash_n_respects_chunk_size(self):
+        data = "chunk 1\n\nsubchunk 1.\nsubchunk 2.\n\n---\n\nchunk 2\n\nsubchunk 1\nsubchunk 2."
+        separator = "\\n\\n---\\n\\n"
+        splitter = FixedRecursiveCharacterTextSplitter(fixed_separator=separator, chunk_size=40, chunk_overlap=0)
+        chunks = splitter.split_text(data)
         assert chunks == ["chunk 1\n\nsubchunk 1.\nsubchunk 2.", "chunk 2\n\nsubchunk 1\nsubchunk 2."]
 
     def test_recursive_split_keep_separator_and_recursive_fallback(self):
@@ -1104,6 +1124,58 @@ class TestFixedRecursiveCharacterTextSplitter:
 
         assert "aa" in chunks
         assert any(len(chunk) >= 40 for chunk in chunks)
+
+    def test_markdown_heading_path_injection(self):
+        """标题不再孤立成段，且每个 chunk 带上完整章节路径。"""
+        text = (
+            "# 锂离子电池技术规范\n\n"
+            "## 1、规范说明\n\n"
+            "### 1.1、目的\n\n"
+            "为规范锂离子电池的生产与检验。\n\n"
+            "### 1.2、范围\n\n"
+            "适用于本公司所有型号。"
+        )
+        splitter = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=512, chunk_overlap=0)
+
+        chunks = splitter.split_text(text)
+
+        # 全文远小于 512，应合并为一段，且不出现 10 字符级碎片
+        assert len(chunks) == 1
+        assert "【章节路径】锂离子电池技术规范 > 1、规范说明 > 1.1、目的" in chunks[0]
+        assert "【章节路径】锂离子电池技术规范 > 1、规范说明 > 1.2、范围" in chunks[0]
+        assert "适用于本公司所有型号。" in chunks[0]
+
+    def test_markdown_heading_path_is_idempotent(self):
+        """父子分段会对父块再次切分，章节路径不得重复注入。"""
+        text = "## 章节标题\n\n小节正文内容"
+        parent = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=512, chunk_overlap=0)
+        parent_chunks = parent.split_text(text)
+        assert parent_chunks[0].count("【章节路径】") == 1
+
+        child = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=512, chunk_overlap=0)
+        child_chunks = child.split_text(parent_chunks[0])
+
+        assert child_chunks[0].count("【章节路径】") == 1
+
+    def test_markdown_aware_can_be_disabled(self):
+        """关闭 Markdown 结构感知时不应注入章节路径。"""
+        text = "## 章节标题\n\n正文内容"
+        splitter = FixedRecursiveCharacterTextSplitter(
+            fixed_separator="\n\n", chunk_size=512, chunk_overlap=0, markdown_aware=False
+        )
+
+        chunks = splitter.split_text(text)
+
+        assert "【章节路径】" not in chunks[0]
+
+    def test_plain_text_is_untouched_by_markdown_awareness(self):
+        """无 Markdown 标题的纯文本（Word 直出）行为与仅合并式切分一致。"""
+        text = "第一段内容。\n\n第二段内容。"
+        splitter = FixedRecursiveCharacterTextSplitter(fixed_separator="\n\n", chunk_size=512, chunk_overlap=0)
+
+        chunks = splitter.split_text(text)
+
+        assert chunks == [text]
 
 
 # ============================================================================
