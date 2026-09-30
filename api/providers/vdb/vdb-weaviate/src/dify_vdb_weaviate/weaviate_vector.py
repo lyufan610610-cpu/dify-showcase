@@ -280,16 +280,22 @@ class WeaviateVector(BaseVector):
     @override
     def _get_uuids(self, documents: list[Document]) -> list[str]:
         """
-        Generates deterministic UUIDs for documents based on their content.
+        Generates the object id for each document.
 
-        Uses UUID5 with URL namespace to ensure consistent IDs for identical content.
+        Prefers the Dify node id in ``metadata["doc_id"]``, so the object id written here is
+        exactly the id later handed to ``delete_by_ids``. A UUID5 content hash stays as the
+        fallback for callers without a node id, but a content hash can never match the node
+        id used for deletion, which is how stale vectors used to survive every re-index.
         """
         URL_NAMESPACE = _uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c8")
 
         uuids = []
         for doc in documents:
-            uuid_val = _uuid.uuid5(URL_NAMESPACE, doc.page_content)
-            uuids.append(str(uuid_val))
+            node_id = (doc.metadata or {}).get("doc_id")
+            if node_id and self._is_uuid(str(node_id)):
+                uuids.append(str(node_id))
+            else:
+                uuids.append(str(_uuid.uuid5(URL_NAMESPACE, doc.page_content)))
 
         return uuids
 
@@ -377,21 +383,52 @@ class WeaviateVector(BaseVector):
     @override
     def delete_by_ids(self, ids: list[str]) -> None:
         """
-        Deletes objects by their UUID identifiers.
+        Deletes the objects belonging to the given Dify node ids.
 
-        Silently ignores 404 errors for non-existent IDs.
+        Dify passes ``index_node_id`` values, which are stored on every object as the
+        ``doc_id`` property; the object UUID may still be a content hash for data written
+        before the id alignment change. Deleting by property first keeps this symmetric with
+        :meth:`text_exists`. Failures are logged as warnings instead of being swallowed, so a
+        broken cleanup shows up in the logs rather than silently piling up stale vectors.
         """
         if not self._client.collections.exists(self._collection_name):
             return
 
         col = self._client.collections.use(self._collection_name)
+        node_ids = [str(i) for i in ids if i]
+        if not node_ids:
+            return
 
-        for uid in ids:
+        batch_size = 100
+        for start in range(0, len(node_ids), batch_size):
+            batch = node_ids[start : start + batch_size]
             try:
-                col.data.delete_by_id(uid)
-            except UnexpectedStatusCodeError as e:
-                if getattr(e, "status_code", None) != 404:
-                    raise
+                col.data.delete_many(
+                    where=Filter.any_of([Filter.by_property("doc_id").equal(node_id) for node_id in batch])
+                )
+            except Exception as e:
+                # Never raise here: a failed cleanup must not block re-indexing, but it must
+                # not disappear either -- stale vectors are exactly what breaks retrieval.
+                logger.warning(
+                    "Weaviate delete by doc_id failed in %s for %d id(s): %s",
+                    self._collection_name,
+                    len(batch),
+                    e,
+                )
+
+        # Keep the previous behaviour for callers that hand us real object UUIDs.
+        legacy_ids = [node_id for node_id in node_ids if self._is_uuid(node_id)]
+        for start in range(0, len(legacy_ids), batch_size):
+            batch = legacy_ids[start : start + batch_size]
+            try:
+                col.data.delete_many(where=Filter.any_of([Filter.by_id().equal(uid) for uid in batch]))
+            except Exception as e:
+                logger.warning(
+                    "Weaviate delete by uuid failed in %s for %d id(s): %s",
+                    self._collection_name,
+                    len(batch),
+                    e,
+                )
 
     @override
     def search_by_vector(self, query_vector: list[float], **kwargs: Any) -> list[Document]:
