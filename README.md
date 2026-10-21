@@ -2,19 +2,21 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-An enterprise-grade multimodal extension based on **Dify 1.17.0**, introducing native presentation parsing, vision-language model (VLM) visual triage, end-to-end multimodal document transcription, and structure-aware chunking.
+An enterprise-grade multimodal extension based on **Dify 1.17.0**. Because **upstream Dify provides zero native support for PowerPoint (`.pptx`) documents**, this repository builds a custom PPTX parsing engine from scratch, introduces Vision-Language Model (VLM) visual triage, provides end-to-end multimodal document transcription, and implements structure-aware chunking.
 
 ---
 
 ## Overview
 
-In enterprise Retrieval-Augmented Generation (RAG) systems, slide presentations (`.pptx`) and complex multi-page documents present severe structural challenges:
-1. **Loss of Spatial & Visual Context**: Conventional document parsers flatten slides into linear text streams, destroying multi-column layouts, tabular relationships, and visual notes.
-2. **Visual Noise Contamination**: Real-world slide decks are inundated with repetitive decorative graphics (corporate logos, recurring header/footer elements, watermark icons, and cosmetic dividers). If ingested unchecked, these images waste vector database storage, pollute multi-modal indices, and degrade retrieval precision.
-3. **Traceability Degradation**: Standard chunkers split content arbitrarily across boundaries, stripping chunk context and breaking page-level citation links back to the original source.
+In enterprise knowledge bases, PowerPoint presentations (`.pptx`) represent a primary format for technical reports, product architectures, and business roadmaps. However, deploying slide decks into standard RAG systems faces steep obstacles:
+1. **Zero Upstream Support in Dify**: Upstream Dify does not support `.pptx` documents out of the box—its file whitelist and extractors lack PowerPoint handling entirely.
+2. **Loss of Spatial & Visual Context**: Conventional document parsers flatten slides into linear text streams, destroying multi-column layouts, tabular relationships, and visual notes.
+3. **Severe Visual Noise Contamination**: Enterprise slide decks are inundated with repetitive decorative graphics (corporate logos, recurring header/footer elements, watermark icons, and cosmetic dividers). If ingested unchecked, these images waste vector database storage, pollute multi-modal indices, and degrade retrieval precision.
+4. **Traceability Degradation**: Standard chunkers split content arbitrarily across boundaries, stripping chunk context and breaking page-level citation links back to the original source.
 
 This fork extends Dify `1.17.0` with an end-to-end multimodal ingestion pipeline that:
-- **Intelligently Triages Visuals**: Uses Vision-Language Models to distinguish decorative graphics from informative figures.
+- **Builds Custom PPTX Parsing from Scratch**: Implements a dedicated slide parser (`pptx_extractor.py`), registering `.pptx` into Dify's document whitelist and extraction dispatch pipeline.
+- **Intelligently Triages Visuals**: Uses Vision-Language Models to distinguish decorative graphics (logos, watermarks) from informative figures.
 - **Transcribes to Structured Markdown**: Translates unstructured slides and pages into uniform, semantic Markdown while strictly preserving image preview anchors (`![image](/files/<id>/file-preview)`) and citation markers (`<!-- page: N -->`).
 - **Preserves Hierarchical Context**: Employs a structure-aware splitter that injects breadcrumb chapter paths (`【Chapter > Section】`) into each chunk.
 - **Hardens Vector Store Integrity**: Resolves an upstream Weaviate vector database issue to guarantee that deleted documents do not leave orphaned vector residuals.
@@ -24,11 +26,11 @@ This fork extends Dify `1.17.0` with an end-to-end multimodal ingestion pipeline
 |                                    Document Ingestion Pipeline                                  |
 |                                                                                                 |
 |  +----------------+      +---------------------+      +--------------------------------------+  |
-|  | Uploaded PPTX  | ---> |   PptxExtractor     | ---> | First-Pass Layout & Shape Extraction |  |
-|  | / PDF Document |      | (Two-Pass Pipeline) |      | (Collects Text, Tables & Image Meta) |  |
-|  +----------------+      +---------------------+      +--------------------------------------+  |
-|                                                                  |                              |
-|                                                                  v                              |
+|  | Uploaded PPTX  | ---> | Custom PptxExtractor| ---> | First-Pass Layout & Shape Extraction |  |
+|  | (Zero Upstream |      | (Two-Pass Pipeline) |      | (Collects Text, Tables & Image Meta) |  |
+|  |  Support)      |      +---------------------+      +--------------------------------------+  |
+|  +----------------+                                                      |                      |
+|                                                                          v                      |
 |                          +-------------------------------------------------------------------+  |
 |                          |   VLM Visual Triage (decorative_image_judge.py)                   |  |
 |                          |   Classifies images in context (decorative vs. informative)       |  |
@@ -61,23 +63,27 @@ This fork extends Dify `1.17.0` with an end-to-end multimodal ingestion pipeline
 
 ## Architectural Evolution
 
-The architecture evolved through deliberate engineering iterations driven by production requirements:
+The architecture evolved through four deliberate engineering milestones driven by production requirements:
 
-### Phase 1: Native Structural Parsing for PPTX
-The project initially introduced a focused native parser (`api/core/rag/extractor/pptx_extractor.py`, ~200 LOC) based on `python-pptx`. Unlike naive text dumpers, it traversed slide shapes, preserved table layouts, extracted presenter notes, and yielded slide-level `Document` objects with 0-indexed page metadata aligned with `PdfExtractor`.
+### Phase 1: Zero-to-One — Building Custom PPTX Parsing for Dify
+**Upstream Dify 1.17.0 completely lacked PowerPoint (`.pptx`) support.** Neither the file extension whitelist (`api/constants/__init__.py`) nor the extraction dispatcher (`extract_processor.py`) recognized `.pptx` files.
+- We authored a custom PowerPoint extraction engine from scratch (`api/core/rag/extractor/pptx_extractor.py`, initially ~200 LOC) based on `python-pptx`.
+- Unlike basic text extractors, it systematically traversed slide shapes, preserved table cell geometries, extracted presenter speaker notes, cataloged embedded image relationships, and yielded slide-level `Document` objects with 0-indexed page metadata aligned with `PdfExtractor`.
+- Hooked the custom extractor cleanly into Dify's document processing pipeline, making PowerPoint presentations fully ingestible for the first time.
 
 ### Phase 2: Visual Noise Discovery & VLM-Driven Triage
-Real-world enterprise slide decks revealed a critical challenge: recurring corporate logos, header graphics, and watermark ornaments appeared on nearly every slide. 
-- Traditional heuristic rules (e.g., counting image cross-slide frequency) failed on single-occurrence title logos or dynamic header variations.
-- To address this, we developed an intelligent visual triage pipeline (`decorative_image_judge.py`). The extractor runs in two passes:
+Once `.pptx` documents could be ingested into Dify, real-world enterprise slide decks immediately exposed a critical bottleneck: recurring corporate logos, header graphics, and watermark ornaments appeared across dozens of slides.
+- Traditional heuristics (e.g. counting image cross-slide frequency) failed on single-occurrence title logos or dynamic header variations.
+- To solve this, we upgraded the custom parser into a **two-pass visual triage pipeline** (`decorative_image_judge.py`):
   1. **Pass 1**: Extracts layout geometry and records image binary hashes, occurrence frequencies, and surrounding text excerpts without immediately committing images to disk.
   2. **Pass 2**: Submits candidate images along with their surrounding textual context and slide locations to a Vision-Language Model in controlled batches. The model classifies images into `decorative` vs. `meaningful`.
   3. **Outcome**: Decorative images are discarded before disk or vector store commitment, while meaningful figures are persisted to Dify's storage layer and assigned standard preview URLs.
 
 ### Phase 3: The Leap to Full Multimodal Document Transcription
-Leveraging the success of VLM-based visual evaluation, the system expanded from image filtering to full-document multimodal transcription (`api/core/rag/extractor/transcribe_service.py`).
-- Complex office documents and slides frequently have non-linear reading orders, multi-column blocks, callout boxes, and nested tables that raw rule-based extractors scramble.
-- By piping the extracted text and preserved image preview URLs into a high-capacity vision model, the entire document is transcribed into clean, unified Markdown.
+The success of using a VLM for slide visual triage sparked the key architectural innovation: **Why stop at filtering images when vision models can comprehend entire slide layouts?**
+- Enterprise presentations and complex office documents rely heavily on non-linear reading orders, multi-column blocks, callout boxes, and nested tables that raw rule-based extractors scramble.
+- Taking inspiration from the VLM's spatial awareness, we developed the multimodal transcription service (`api/core/rag/extractor/transcribe_service.py`).
+- The entire document stream is converted into high-fidelity, structured Markdown by a vision LLM, retaining rich layout relationships, tables, and formula notations.
 - **Strict Invariants**:
   - Image preview anchors (`![image](/files/<id>/file-preview)`) must be preserved verbatim.
   - Page tracking comments (`<!-- page: N -->`) and table row tracking (`<!-- row: N -->`) are inserted to preserve citation integrity during vector retrieval.
@@ -92,6 +98,7 @@ Leveraging the success of VLM-based visual evaluation, the system expanded from 
 
 ## Key Features
 
+- **Custom PPTX Support for Dify**: Bridges the gap in upstream Dify by adding full `.pptx` parsing, table extraction, and slide note ingestion.
 - **Multimodal Document Transcription**: Automatically turns slides, PDF pages, and complex documents into standard Markdown with restored table formatting and LaTeX math expressions.
 - **Context-Aware Visual Filtering**: Removes logos, decorative bars, and background watermarks before vectorization.
 - **Preserved Citation Traceability**: Injects non-intrusive page tags (`<!-- page: N -->`) and heading paths (`【Heading Path】`) so that retrieval citations pinpoint the exact slide, section, and page.
@@ -185,7 +192,7 @@ The commits layered on top of Dify `1.17.0` (`09a855dcef`) represent clean, modu
 
 ```
 09a855dcef chore: bump version to 1.17.0 (Baseline upstream release)
-b100a01822 feat(rag): introduce native PPTX extractor with transcription hook
+b100a01822 feat(rag): introduce custom PPTX extractor and register entrypoint in Dify
 1fbc2d586f feat(rag): wire transcription entrypoint and converge extension whitelist
 72afef16d4 fix(rag): restore pptx dispatch branch with explicit file assertions
 f4d3da069b feat(rag): implement multimodal transcription service & heading-aware splitter
