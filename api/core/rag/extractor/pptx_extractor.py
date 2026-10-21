@@ -3,20 +3,31 @@
 Load ``.pptx`` files into Markdown-ish text with embedded image links. Each
 slide becomes its own ``Document``: the body keeps the ``## Slide N`` heading
 and carries a 0-based ``page`` metadata entry, aligned with ``PdfExtractor`` so
-the transcription service can emit ``<!-- page: N -->`` markers and keep
+the Track A transcription service can emit ``<!-- page: N -->`` markers and keep
 引用溯源 correct. Tables become Markdown tables, and pictures are persisted
 through the storage layer so the frontend can still render them after the file
 has been vectorized.
 
-图片清洗（视觉模型二分类）
---------------------------
-逐页重复的公司 Logo、水印、页眉页脚装饰等"无关图片"既不承载业务信息，又会污染
-向量库与前端渲染，因此解析阶段用视觉模型对图片做一次 decorative / meaningful 判定
-并剔除。判定上下文为"图片出现在哪些页 + 该页正文节选"；解析分两遍执行：第一遍登记
-图片与出现页数并写占位符，第二遍判定后把保留的图片落盘并回填 Markdown 链接。
+视觉模型图片清洗
+----------------
+业务反馈 PPT 里存在大量"无关图片"（公司 Logo、水印、页眉页脚装饰、分隔线、
+通用图标），它们逐页重复出现，既不承载业务信息，又会污染向量库与前端渲染。
 
-模型接入复用 ``TRANSCRIBE_*`` 配置，不新增配置项；全流程 fail-open，开关关闭、
-模型不可用、调用失败或输出无法解析时一律保留全部图片。
+本模块在解析阶段直接用视觉模型做一次二分类，取代原先"按跨页重复"的纯规则判定。
+判定不只看图片本身：第一遍解析会同时记录每张图出现在哪几页、以及这些页面的正文，
+送模型时把"出现位置 + 所在页面正文节选"作为上下文一起给出，由模型判断图片内容与
+该页文字是否严重无关——最典型的就是逐页重复的公司 Logo、水印与页眉页脚装饰。
+解析因此分两遍执行：
+
+1. 第一遍只登记图片（内容哈希 -> 二进制）、出现页数与页面正文，正文写占位符，**不落盘**；
+2. 第二遍把候选图片连同各自上下文分批交给视觉模型判定 ``decorative`` / ``meaningful``，
+   被判为装饰性的图片既不落盘也不写入正文，其余图片落盘后把占位符替换成
+   Markdown 链接，再组装 ``Document``。
+
+模型接入复用 ``TRANSCRIBE_*`` 配置（``TRANSCRIBE_ENABLED`` /
+``TRANSCRIBE_MODEL_PROVIDER`` / ``TRANSCRIBE_MODEL_NAME`` / ``TRANSCRIBE_IMAGE_DETAIL``），
+不新增任何配置项。所有环节 **fail-open**：开关关闭、模型不可用、调用失败、
+输出无法解析时一律保留全部图片，绝不让图片清洗影响文档解析结果。
 """
 
 import base64
@@ -48,11 +59,9 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------------------
 # 图片清洗常量
 # --------------------------------------------------------------------------------------
-# 正文里图片先写成占位符，等模型判定完再决定"落盘并替换成链接"还是"整条丢弃"。
-# \x00 是不可能出现在正常文本里的哨兵，``str.splitlines()`` 也不会在它上面断行。
 _IMAGE_PLACEHOLDER = "\x00pptx-image\x00"
 
-# 送模型判定的单张图片字节上限：过大的图又贵又容易超时，直接保留、不判定。
+# 送模型判定的单张图片字节上限：过大的图容易超时，直接保留、不判定。
 _IMAGE_MAX_BYTES = 1_500_000
 # 一次解析最多判定多少张图，避免超大 deck 打爆预算。
 _IMAGE_MAX_CANDIDATES = 60
@@ -66,18 +75,16 @@ _CONTEXT_SLIDE_LIST_MAX = 6
 _CONTEXT_SLIDE_TEXT_MAX = 3
 _CONTEXT_CHARS_PER_SLIDE = 120
 
-# 可交给视觉模型判定的 MIME 白名单：跳过 emf / wmf 等矢量格式（模型多不支持）。
 _JUDGEABLE_MIME_TYPES: frozenset[str] = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/bmp", "image/tiff", "image/webp"}
 )
 
-# 模型若把结果包在 ``` 代码块里，需要剥掉最外层围栏。
+
 _CODE_FENCE_PATTERN = re.compile(r"^\s*```[a-zA-Z0-9_+\-]*\s*\n(.*?)\n\s*```\s*$", re.DOTALL)
 
-# 丢弃装饰性图片后可能留下连续空行，收敛为最多一个空行，保持段落结构。
+
 _BLANK_LINE_RUN_PATTERN = re.compile(r"\n{3,}")
 
-# 图片清单的开场白：明确"图片前的文字 = 该图的上下文"，避免模型把上下文串台。
 _IMAGE_VERDICT_INTRO = (
     "以下按顺序给出同一份 PPT 里抽出的图片。每张图片前面紧跟的文字是它自己的上下文"
     "（出现位置与所在页面正文节选），请逐张独立判断，不要把不同图片的上下文混淆。"
@@ -118,16 +125,14 @@ _IMAGE_PLACEHOLDER_PATTERN = re.compile(re.escape(_IMAGE_PLACEHOLDER) + r"[0-9a-
 
 
 # --------------------------------------------------------------------------------------
-# 模块级工具
+
 # --------------------------------------------------------------------------------------
 def _mime_type_for_ext(ext: str) -> str:
-    """按扩展名猜 MIME（``jpeg`` 也要能命中 ``image/jpeg``）。"""
     mime_type, _ = mimetypes.guess_type("image." + (ext or "png"))
     return mime_type or ""
 
 
 def _supports_vision(model_instance: Any, model_name: str) -> bool:
-    """判断模型是否具备视觉能力。schema 查询失败时 fail-open（返回 True）。"""
     try:
         from graphon.model_runtime.entities.model_entities import ModelFeature
 
@@ -150,7 +155,6 @@ def _select_candidates(
     image_bank: Mapping[str, tuple[bytes, str]],
     occurrences: Mapping[str, int],
 ) -> list[str]:
-    """挑出可送模型判定的图片：体积与格式合格，跨页重复的优先排前面。"""
     usable: list[str] = []
     for key, (blob, ext) in image_bank.items():
         if not blob or len(blob) > _IMAGE_MAX_BYTES:
@@ -162,7 +166,7 @@ def _select_candidates(
     if not usable:
         return []
 
-    # 跨页重复的图片更可能是装饰性元素（Logo / 水印），优先送模型判定。
+    # 可惜可惜可惜，说不定未来的某天国米成了欧冠冠军呢
     usable.sort(key=lambda key: (-occurrences.get(key, 0), len(image_bank[key][0])))
 
     if len(usable) > _IMAGE_MAX_CANDIDATES:
@@ -693,3 +697,4 @@ class PptxExtractor(BaseExtractor):
     def parse_pptx(self, pptx_path: str) -> str:
         """整篇文本视图（向后兼容），内容与 ``parse_pptx_documents`` 拼接一致。"""
         return "\n\n".join(document.page_content for document in self.parse_pptx_documents(pptx_path))
+# Forza Inter!

@@ -2,10 +2,10 @@
 
 把上传的文档先交给视觉语言模型转写成统一的 Markdown，再进入 Dify 原有的清洗与向量化流程；原文中的图片链接逐字保留，前端渲染不受影响。
 
-这个仓库是 **Dify 1.17.0 的 fork**，在官方 `1.17.0` 标签之上叠加了 **6 个提交**。它不是一份一次性的大 diff，而是刻意按演进顺序切分的：每个提交都能独立读懂、独立回退，`git show` 看到的就是当时真实的改动与当时的取舍，包括中途走错又修回来的地方。
+这个仓库是 **Dify 1.17.0 的 fork**，在官方 `1.17.0` 标签之上叠加了 **6 个功能提交**（另有一个提交专门写这份 README）。它不是一份一次性的大 diff，而是刻意按演进顺序切分的：每个提交都能独立读懂、独立回退，`git show` 看到的就是当时真实的改动与当时的取舍，包括中途走错又修回来的地方。
 
 - **基线**：`09a855dcef` — `chore: bump version to 1.17.0 (#41247)`，即 `1.17.0` 标签
-- **叠加**：6 个提交，涉及 13 个文件（12 个转写相关 + 1 个相互独立的 weaviate 修复）
+- **叠加**：6 个功能提交，涉及 13 个代码文件（12 个转写相关 + 1 个相互独立的 weaviate 修复），外加 2 个 README
 - **范围**：多模态转写（文档 → 视觉模型 → 统一 Markdown）
 - 上游 README 已移到 [`README.upstream.md`](./README.upstream.md)
 
@@ -46,7 +46,9 @@ git diff 09a855dcef..HEAD --stat    # 全量改动
 
 上一提交撤 `.pptx` 直出分支时，`upload_file` 的显式前置条件也跟着消失了。这里恢复 `.pptx` 原生分支，并加 `assert upload_file is not None, "upload_file is required"`，让约束写在入口而不是靠下游的 None 检查兜底。
 
-### 4 · 主体：多模态转写服务（`f4d3da069b`）
+### 4 · 主体：先做 PPTX 视觉判定，再接 Track A 转写（`f4d3da069b`）
+
+这个提交里是两步，顺序是**先给 pptx 加视觉判定（图片清洗），再把 Track A 多模态转写服务接上去**：图片判定先独立跑通，转写侧是它的下游消费者，直接复用这套判定结果。
 
 新增 `api/core/rag/extractor/transcribe_service.py`（649 行），是整个改造的核心：
 
@@ -61,7 +63,7 @@ git diff 09a855dcef..HEAD --stat    # 全量改动
 
 | 文件 | 变化 |
 | --- | --- |
-| `pptx_extractor.py` | 206 → 695 行。`_IMAGE_PLACEHOLDER` + `_render_body` 把图片回填原位；`_save_image` / `_persist_images` 先按内容 sha1 去重；装饰图视觉判定两遍（每批 ≤4 张、≤4 MB）；`_shape_sort_key` 稳定排序；`_table_to_markdown` 还原表格 |
+| `pptx_extractor.py` | 206 → 695 行（当前 HEAD 快照 700 行，补入服务器端的注释）。`_IMAGE_PLACEHOLDER` + `_render_body` 把图片回填原位；`_save_image` / `_persist_images` 先按内容 sha1 去重；装饰图视觉判定两遍（每批 ≤4 张、≤4 MB）；`_shape_sort_key` 稳定排序；`_table_to_markdown` 还原表格 |
 | `pdf_extractor.py` | 内容 sha1 跨整篇去重，同一个 Logo 不再逐页重复落盘 |
 | `fixed_text_splitter.py` | 149 → 277 行。合并式切分 + Markdown 结构感知：ATX 标题栈、`【章节路径】` 前缀注入、` > ` 分隔 |
 | `index_processor_base.py` / `indexing_runner.py` | 各 2 行，切分调用处传入 `markdown_aware=True` |
@@ -69,7 +71,9 @@ git diff 09a855dcef..HEAD --stat    # 全量改动
 | `feature/__init__.py` | 新增 `TRANSCRIBE_*` 配置项，并撤销首个提交夹带的 `WEBSOCKET_MAX_HTTP_BUFFER_SIZE` |
 | `test_text_splitter.py` | 6 个新用例 |
 
-### 5 · 装饰图不再靠猜（`7d3b3057fc`）
+### 5 · 装饰图不再靠猜：转写侧也接视觉判定（`7d3b3057fc`）
+
+pptx 侧在阶段 4 已经改成视觉判定；这一提交把同一套思路补到转写侧，替换掉原先只按「跨页重复」判断的启发式。
 
 第一版判定装饰图只用一条启发式：同一张图跨页重复出现。它覆盖不全 —— 只在封面出现一次的 Logo、只出现在 2/5 页的水印、页脚装饰线条都会漏掉，而这些图同样会吃掉视觉模型的输入预算、把注意力引向无意义内容。
 
