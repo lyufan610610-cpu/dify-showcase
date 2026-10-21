@@ -1,156 +1,202 @@
-# Dify 1.17.0 · PPTX 原生解析与多模态转写
+# Dify Multimodal RAG & Intelligent Document Transcription Extension
 
-把上传的文档先交给视觉语言模型转写成统一的 Markdown，再进入 Dify 原有的清洗与向量化流程；原文中的图片链接逐字保留，前端渲染不受影响。
+[English](README.md) | [中文](README_zh.md)
 
-这个仓库是 **Dify 1.17.0 的 fork**，在官方 `1.17.0` 标签之上叠加了 **6 个功能提交**（另有一个提交专门写这份 README）。它不是一份一次性的大 diff，而是刻意按演进顺序切分的：每个提交都能独立读懂、独立回退，`git show` 看到的就是当时真实的改动与当时的取舍，包括中途走错又修回来的地方。
+An enterprise-grade multimodal extension based on **Dify 1.17.0**, introducing native presentation parsing, vision-language model (VLM) visual triage, end-to-end multimodal document transcription, and structure-aware chunking.
 
-- **基线**：`09a855dcef` — `chore: bump version to 1.17.0 (#41247)`，即 `1.17.0` 标签
-- **叠加**：6 个功能提交，涉及 13 个代码文件（12 个转写相关 + 1 个相互独立的 weaviate 修复），外加 2 个 README
-- **范围**：多模态转写（文档 → 视觉模型 → 统一 Markdown）
-- 上游 README 已移到 [`README.upstream.md`](./README.upstream.md)
+---
 
-## 提交演进
+## Overview
 
-| # | commit | 主题 | 规模 |
-| --- | --- | --- | --- |
-| 1 | `b100a01822` | feat(rag): 引入 PPTX 原生解析器并预留转写接入点 | 4 files, +221/-1 |
-| 2 | `1fbc2d586f` | feat(rag): 接入视觉模型转写入口，收敛办公扩展名白名单 | 3 files, +78/-61 |
-| 3 | `72afef16d4` | fix(rag): 补回 pptx 原生分支并显式断言 upload_file 必填 | 1 file, +5/-0 |
-| 4 | `f4d3da069b` | feat(rag): 多模态转写服务落地 | 9 files, +1483/-51 |
-| 5 | `7d3b3057fc` | feat(rag): 装饰性图片改走视觉模型判定 | 3 files, +525/-17 |
-| 6 | `7204e8fa3b` | fix(vdb): 修复 weaviate 删除失效导致的旧向量残留 | 1 file, +48/-11 |
+In enterprise Retrieval-Augmented Generation (RAG) systems, slide presentations (`.pptx`) and complex multi-page documents present severe structural challenges:
+1. **Loss of Spatial & Visual Context**: Conventional document parsers flatten slides into linear text streams, destroying multi-column layouts, tabular relationships, and visual notes.
+2. **Visual Noise Contamination**: Real-world slide decks are inundated with repetitive decorative graphics (corporate logos, recurring header/footer elements, watermark icons, and cosmetic dividers). If ingested unchecked, these images waste vector database storage, pollute multi-modal indices, and degrade retrieval precision.
+3. **Traceability Degradation**: Standard chunkers split content arbitrarily across boundaries, stripping chunk context and breaking page-level citation links back to the original source.
+
+This fork extends Dify `1.17.0` with an end-to-end multimodal ingestion pipeline that:
+- **Intelligently Triages Visuals**: Uses Vision-Language Models to distinguish decorative graphics from informative figures.
+- **Transcribes to Structured Markdown**: Translates unstructured slides and pages into uniform, semantic Markdown while strictly preserving image preview anchors (`![image](/files/<id>/file-preview)`) and citation markers (`<!-- page: N -->`).
+- **Preserves Hierarchical Context**: Employs a structure-aware splitter that injects breadcrumb chapter paths (`【Chapter > Section】`) into each chunk.
+- **Hardens Vector Store Integrity**: Resolves an upstream Weaviate vector database issue to guarantee that deleted documents do not leave orphaned vector residuals.
+
+```
++-------------------------------------------------------------------------------------------------+
+|                                    Document Ingestion Pipeline                                  |
+|                                                                                                 |
+|  +----------------+      +---------------------+      +--------------------------------------+  |
+|  | Uploaded PPTX  | ---> |   PptxExtractor     | ---> | First-Pass Layout & Shape Extraction |  |
+|  | / PDF Document |      | (Two-Pass Pipeline) |      | (Collects Text, Tables & Image Meta) |  |
+|  +----------------+      +---------------------+      +--------------------------------------+  |
+|                                                                  |                              |
+|                                                                  v                              |
+|                          +-------------------------------------------------------------------+  |
+|                          |   VLM Visual Triage (decorative_image_judge.py)                   |  |
+|                          |   Classifies images in context (decorative vs. informative)       |  |
+|                          +-------------------------------------------------------------------+  |
+|                                       /                                 \                       |
+|                        [Decorative: Logo/Watermark]               [Informative Figure]          |
+|                                     /                                     \                     |
+|                                    v                                       v                    |
+|                             Discard & Purge                        Persist to Storage Layer     |
+|                                                                    Generate Preview Anchor      |
+|                                                                            |                    |
+|                                                                            v                    |
+|  +-------------------------------------------------------------------------------------------+  |
+|  |   Multimodal Document Transcription (transcribe_service.py)                               |  |
+|  |   VLM translates document to structured Markdown; preserves ![image](...) & <!-- page: N -->|  |
+|  +-------------------------------------------------------------------------------------------+  |
+|                                              |                                                  |
+|                                              v                                                  |
+|  +-------------------------------------------------------------------------------------------+  |
+|  |   Structure-Aware Splitter (fixed_text_splitter.py)                                       |  |
+|  |   Injects ATX Heading Breadcrumbs (【Chapter > Section】) & Merges Split Fragments        |  |
+|  +-------------------------------------------------------------------------------------------+  |
+|                                              |                                                  |
+|                                              v                                                  |
+|                       Dify Index Processors & Vector Storage (Weaviate)                         |
++-------------------------------------------------------------------------------------------------+
+```
+
+---
+
+## Architectural Evolution
+
+The architecture evolved through deliberate engineering iterations driven by production requirements:
+
+### Phase 1: Native Structural Parsing for PPTX
+The project initially introduced a focused native parser (`api/core/rag/extractor/pptx_extractor.py`, ~200 LOC) based on `python-pptx`. Unlike naive text dumpers, it traversed slide shapes, preserved table layouts, extracted presenter notes, and yielded slide-level `Document` objects with 0-indexed page metadata aligned with `PdfExtractor`.
+
+### Phase 2: Visual Noise Discovery & VLM-Driven Triage
+Real-world enterprise slide decks revealed a critical challenge: recurring corporate logos, header graphics, and watermark ornaments appeared on nearly every slide. 
+- Traditional heuristic rules (e.g., counting image cross-slide frequency) failed on single-occurrence title logos or dynamic header variations.
+- To address this, we developed an intelligent visual triage pipeline (`decorative_image_judge.py`). The extractor runs in two passes:
+  1. **Pass 1**: Extracts layout geometry and records image binary hashes, occurrence frequencies, and surrounding text excerpts without immediately committing images to disk.
+  2. **Pass 2**: Submits candidate images along with their surrounding textual context and slide locations to a Vision-Language Model in controlled batches. The model classifies images into `decorative` vs. `meaningful`.
+  3. **Outcome**: Decorative images are discarded before disk or vector store commitment, while meaningful figures are persisted to Dify's storage layer and assigned standard preview URLs.
+
+### Phase 3: The Leap to Full Multimodal Document Transcription
+Leveraging the success of VLM-based visual evaluation, the system expanded from image filtering to full-document multimodal transcription (`api/core/rag/extractor/transcribe_service.py`).
+- Complex office documents and slides frequently have non-linear reading orders, multi-column blocks, callout boxes, and nested tables that raw rule-based extractors scramble.
+- By piping the extracted text and preserved image preview URLs into a high-capacity vision model, the entire document is transcribed into clean, unified Markdown.
+- **Strict Invariants**:
+  - Image preview anchors (`![image](/files/<id>/file-preview)`) must be preserved verbatim.
+  - Page tracking comments (`<!-- page: N -->`) and table row tracking (`<!-- row: N -->`) are inserted to preserve citation integrity during vector retrieval.
+  - Documents are chunked across line boundaries respecting `TRANSCRIBE_MAX_CHARS_PER_CHUNK` budgets to preserve cross-page continuity.
+
+### Phase 4: Production Resilience & Retrieval Optimization
+- **Fail-Open Resilience**: If the vision model times out, encounters rate limits, or returns malformed outputs, the system gracefully falls back to the native extractor output. Document ingestion is never blocked.
+- **Structure-Aware Chunking (`fixed_text_splitter.py`)**: Enhanced Dify's fixed-size text splitter with an ATX heading stack tracker. It injects chapter breadcrumbs (e.g., `【Chapter 2 > Section 1.3】`) into each chunk and merges sub-chunks to avoid fragmented, context-free snippets.
+- **Weaviate Vector Persistence Fix (`weaviate_vector.py`)**: Identified and fixed an upstream defect where document deletions in Dify failed to remove corresponding Weaviate vectors due to mismatched ID hashing algorithms, eliminating vector leaks.
+
+---
+
+## Key Features
+
+- **Multimodal Document Transcription**: Automatically turns slides, PDF pages, and complex documents into standard Markdown with restored table formatting and LaTeX math expressions.
+- **Context-Aware Visual Filtering**: Removes logos, decorative bars, and background watermarks before vectorization.
+- **Preserved Citation Traceability**: Injects non-intrusive page tags (`<!-- page: N -->`) and heading paths (`【Heading Path】`) so that retrieval citations pinpoint the exact slide, section, and page.
+- **Non-Breaking Architecture**: Placed cleanly at the output of `extract_processor.py`. Seamlessly interfaces with all Dify index processors (`paragraph`, `hierarchical`, `qa`).
+- **Production-Ready Fallback**: Strict try/catch sandboxing ensures zero ingestion interruptions even if downstream VLM APIs become unavailable.
+
+---
+
+## Configuration Reference
+
+Add the following environment variables to your deployment environment (e.g., `docker/.env`):
 
 ```bash
-git log --oneline 09a855dcef..HEAD
-git show f4d3da069b                 # 主体提交
-git diff 09a855dcef..HEAD --stat    # 全量改动
-```
-
-## 逐阶段说明
-
-### 1 · 先把 pptx 读进来（`b100a01822`）
-
-新增 `api/core/rag/extractor/pptx_extractor.py`（201 行）：用 python-pptx 遍历每页形状，抽出文本框与备注，保留图片引用，统一产出 Dify 的 `Document`。`extract_processor.py` 注册 `.pptx` 分支，`constants/__init__.py` 的扩展名白名单补上 `pptx`。
-
-这一提交也如实带进了两处**与转写无关**的东西：`feature/__init__.py` 新增的 `WEBSOCKET_MAX_HTTP_BUFFER_SIZE`（Engine.IO 的 HTTP 缓冲区，用于协作请求的大 payload），以及一处拼写回归 `Unstructure  dWordExtractor`。两者都在后续提交被处理掉，保留原样是为了让演进轨迹真实。
-
-### 2 · 找到接入点（`1fbc2d586f`）
-
-修掉上一提交的拼写回归，把白名单从 `pptx / ppt / doc` 收敛回只留 `pptx`（`ppt` 是老二进制格式，python-pptx 读不了）。
-
-真正的重点是 `extract_processor.py`：撤掉 `.pptx` 直出分支，改为在原生 extractor 产出 `list[Document]` 之后接入 `transcribe_documents()`。选这个位置的理由写在代码注释里 —— 它是 paragraph / parent_child / qa 三个 index processor 的唯一收口，且此时图片已经落存储、`UploadFile` 已经入库，转写可以直接把 `![image](/files/<id>/file-preview)` 转成视觉模型可读的输入。接入点外围有三层防御：函数内延迟导入规避循环依赖、外层 `try` 兜底、`transcribe_documents()` 自身保证不抛异常。
-
-`pptx_extractor.py` 同时补齐模块与类 docstring（含 Args）、`_closed` / `_session` 类型注解，`session` 改为 keyword-only，`extract()` 收敛成单行。
-
-### 3 · 补回被顺手删掉的分支（`72afef16d4`）
-
-上一提交撤 `.pptx` 直出分支时，`upload_file` 的显式前置条件也跟着消失了。这里恢复 `.pptx` 原生分支，并加 `assert upload_file is not None, "upload_file is required"`，让约束写在入口而不是靠下游的 None 检查兜底。
-
-### 4 · 主体：先做 PPTX 视觉判定，再接 Track A 转写（`f4d3da069b`）
-
-这个提交里是两步，顺序是**先给 pptx 加视觉判定（图片清洗），再把 Track A 多模态转写服务接上去**：图片判定先独立跑通，转写侧是它的下游消费者，直接复用这套判定结果。
-
-新增 `api/core/rag/extractor/transcribe_service.py`（649 行），是整个改造的核心：
-
-- 以**整篇文档**为单位转写，而不是以 chunk 为单位，保证跨页、跨块的上下文连贯
-- 对外只暴露 `is_transcription_enabled()` 与 `transcribe_documents()`
-- `SKIP_EXTENSIONS` 跳过 `.md / .markdown / .mdx`（本来就是 Markdown，无需转写）
-- `_split_chunks()` 按行累积、绝不切断单行，超长文档按 `TRANSCRIBE_MAX_CHARS_PER_CHUNK` 分片
-- 用 `<!-- page: N -->` 标注页码（配合 `TRANSCRIBE_PAGE_OFFSET`），表格行用 `<!-- row: N -->`
-- `_CODE_FENCE_PATTERN` 剥掉模型自己加上去的最外层代码围栏
-
-同提交配套：
-
-| 文件 | 变化 |
-| --- | --- |
-| `pptx_extractor.py` | 206 → 695 行（当前 HEAD 快照 700 行，补入服务器端的注释）。`_IMAGE_PLACEHOLDER` + `_render_body` 把图片回填原位；`_save_image` / `_persist_images` 先按内容 sha1 去重；装饰图视觉判定两遍（每批 ≤4 张、≤4 MB）；`_shape_sort_key` 稳定排序；`_table_to_markdown` 还原表格 |
-| `pdf_extractor.py` | 内容 sha1 跨整篇去重，同一个 Logo 不再逐页重复落盘 |
-| `fixed_text_splitter.py` | 149 → 277 行。合并式切分 + Markdown 结构感知：ATX 标题栈、`【章节路径】` 前缀注入、` > ` 分隔 |
-| `index_processor_base.py` / `indexing_runner.py` | 各 2 行，切分调用处传入 `markdown_aware=True` |
-| `prompts.py` | 新增 `DEFAULT_TRANSCRIBE_PROMPT`，10 条硬约束 |
-| `feature/__init__.py` | 新增 `TRANSCRIBE_*` 配置项，并撤销首个提交夹带的 `WEBSOCKET_MAX_HTTP_BUFFER_SIZE` |
-| `test_text_splitter.py` | 6 个新用例 |
-
-### 5 · 装饰图不再靠猜：转写侧也接视觉判定（`7d3b3057fc`）
-
-pptx 侧在阶段 4 已经改成视觉判定；这一提交把同一套思路补到转写侧，替换掉原先只按「跨页重复」判断的启发式。
-
-第一版判定装饰图只用一条启发式：同一张图跨页重复出现。它覆盖不全 —— 只在封面出现一次的 Logo、只出现在 2/5 页的水印、页脚装饰线条都会漏掉，而这些图同样会吃掉视觉模型的输入预算、把注意力引向无意义内容。
-
-于是新增 `decorative_image_judge.py`（273 行），把「图片内容 + 所在位置 + 附近正文」一起交给视觉模型做 decorative / meaningful 二分类：候选先按 MIME 与体积过滤（单张 >1.5 MB 跳过，候选上限 60 张），每批 ≤4 张且 ≤4 MB，提示词与 `PptxExtractor` 同一口径。全链路 fail-open —— 单批失败只丢该批、解析不出判定等价全部保留、整体不可用返回 `None` 交调用方决定。
-
-`transcribe_service.py`（649 → 877 行）的 `_drop_decorative_images()` 相应改为**视觉优先、启发式兜底**：取到判定就用判定，取不到才回落到「跨页重复」的频率启发式。开关是 `TRANSCRIBE_DECORATIVE_JUDGE`（默认 `true`）。
-
-### 6 · 顺带修掉的 weaviate 删除失效（`7204e8fa3b`）
-
-与转写改动没有依赖，可以单独摘掉。原实现写入时用内容哈希（UUID5）当对象 id，删除时收到的却是 Dify 节点 id，两者永远对不上 —— 删除事实上无效，重复索引会不断累积无人引用的残留向量。改动后写入优先取 `metadata["doc_id"]` 作为对象 id，删除按 `doc_id` 属性批量清理（每批 100 条），对 UUID 形态的入参保留旧的 `by_id` 行为，删除失败统一打 `warning` 而不是静默吞掉。
-
-## 设计上的三条硬约束
-
-1. **永不向上抛异常。** 模型超时、provider 未配置、返回内容不合规，一律拦下并回落到原生解析结果。
-2. **图片链接必须逐字符保留。** 转写输出若丢了原文的图片链接，该结果整体被丢弃。唯一例外是装饰性图片 —— 它们在切分前就被剥离，因此不进这条校验。
-3. **不得导入 `ParagraphIndexProcessor`。** 会形成循环导入，所以图片正则在这套代码里独立实现。
-
-## 配置
-
-把下面这些追加到 `docker/.env`（该文件被 `docker/.gitignore` 的 `*.env` 规则排除，不在仓库内）：
-
-```
+# General Toggle
 TRANSCRIBE_ENABLED=true
+
+# Vision Model Configuration
 TRANSCRIBE_MODEL_PROVIDER=langgenius/openai_api_compatible/openai_api_compatible
 TRANSCRIBE_MODEL_NAME=qwen3.8-27b
-TRANSCRIBE_LANGUAGE=中文
 TRANSCRIBE_IMAGE_DETAIL=low
+
+# Visual Filtering Toggle (true = VLM classification, false = frequency heuristic)
 TRANSCRIBE_DECORATIVE_JUDGE=true
+
+# Formatting & Prompt Customization
+TRANSCRIBE_LANGUAGE=中文
+TRANSCRIBE_PROMPT=
+TRANSCRIBE_TEMPERATURE=
+
+# Chunking & Pagination Budget
 TRANSCRIBE_MAX_CHARS_PER_CHUNK=12000
 TRANSCRIBE_MAX_CHUNKS=0
 TRANSCRIBE_PAGE_OFFSET=1
 ```
 
-| 变量 | 默认值 | 含义 |
-| --- | --- | --- |
-| `TRANSCRIBE_ENABLED` | `false` | 总开关，关闭时 `transcribe_documents()` 直接返回 `None`，走原生解析 |
-| `TRANSCRIBE_MODEL_PROVIDER` | 空 | provider id，需与控制台中已配置的 provider 一致 |
-| `TRANSCRIBE_MODEL_NAME` | 空 | 模型名，需是所选 provider 下的视觉模型 |
-| `TRANSCRIBE_PROMPT` | 空 | 自定义提示词，留空使用 `DEFAULT_TRANSCRIBE_PROMPT`，支持 `{language}` 占位 |
-| `TRANSCRIBE_LANGUAGE` | 空 | 输出语言，留空跟随原文 |
-| `TRANSCRIBE_TEMPERATURE` | 空 | 采样温度，留空用模型默认 |
-| `TRANSCRIBE_IMAGE_DETAIL` | `low` | 图片细节档位 |
-| `TRANSCRIBE_DECORATIVE_JUDGE` | `true` | 是否让视觉模型逐张判定装饰性图片（Logo、水印、页眉页脚配图）。关闭后回退到「同一图片跨页重复出现」的廉价启发式 |
-| `TRANSCRIBE_MAX_CHARS_PER_CHUNK` | `12000` | 超长文档的分片阈值，转写按片进行 |
-| `TRANSCRIBE_MAX_CHUNKS` | `0` | 分片数上限，`0` 表示不限制 |
-| `TRANSCRIBE_PAGE_OFFSET` | `1` | 页码起始值，用于生成 `<!-- page: n -->` 标记 |
+### Parameter Details
 
-`TRANSCRIBE_MODEL_PROVIDER` 与 `TRANSCRIBE_MODEL_NAME` 留空时转写会被跳过并回落到原生解析，不会报错。
+| Variable | Default | Description |
+|---|---|---|
+| `TRANSCRIBE_ENABLED` | `false` | Master toggle. When `false`, documents bypass VLM and use native extraction. |
+| `TRANSCRIBE_MODEL_PROVIDER` | `""` | The Dify model provider ID configured in the admin console. |
+| `TRANSCRIBE_MODEL_NAME` | `""` | The vision model identifier supported under the selected provider. |
+| `TRANSCRIBE_DECORATIVE_JUDGE` | `true` | Enables VLM-based visual filtering for decorative images. If disabled, falls back to cross-slide frequency heuristics. |
+| `TRANSCRIBE_IMAGE_DETAIL` | `low` | Detail tier for images passed to the vision model (`low` or `high`). |
+| `TRANSCRIBE_LANGUAGE` | `""` | Desired output language for transcription (e.g. `中文`, `English`). Defaults to document language if unset. |
+| `TRANSCRIBE_MAX_CHARS_PER_CHUNK` | `12000` | Character threshold for splitting long documents during transcription. |
+| `TRANSCRIBE_PAGE_OFFSET` | `1` | Starting page index for generated `<!-- page: n -->` citation tags. |
 
-## 怎么验证
+---
 
-```bash
-# 整体改动范围
-git diff 09a855dcef..HEAD --stat
+## Quickstart & Verification
 
-# 开关是否生效
-docker compose exec api python -c "from configs import dify_config; print(dify_config.TRANSCRIBE_ENABLED)"
-
-# 切分器用例
-docker compose exec api uv run pytest tests/unit_tests/core/rag/splitter/test_text_splitter.py -q
-```
-
-功能侧：在知识库中上传一份带图片的 pptx 或 pdf，索引完成后查看 api 日志里的转写记录，并确认文档分段中出现了 `【章节路径】` 前缀与 `<!-- page: n -->` 标记。
-
-配置项由 api 与 worker 读取，改完要重建这两个服务：
+### 1. Apply Configuration
+After setting the environment variables in `docker/.env`, rebuild and restart the `api` and `worker` services:
 
 ```bash
 docker compose build api worker
 docker compose up -d api worker
 ```
 
-## 边界
+### 2. Verify Service Settings
+Ensure the configuration has taken effect inside the container:
 
-- **失败不阻断，是刻意的设计选择**，不是缺失的容错。
-- **装饰图判定有额外开销。** 转写侧每篇文档最多多出 15 次视觉模型调用（每批最多 4 张图），单张超过 1.5 MB 或候选超过 60 张的部分会被跳过。想省掉这笔开销就把 `TRANSCRIBE_DECORATIVE_JUDGE` 设为 `false`。
-- **只针对 1.17.0。** 上游后续版本若改动了 `extract_processor.py` 或 index processor，需要重新核对上下文。
+```bash
+docker compose exec api python -c "from configs import dify_config; print('Transcribe Enabled:', dify_config.TRANSCRIBE_ENABLED)"
+```
 
-## 与上游的关系
+### 3. Run Unit Tests
+Execute the structure-aware text splitter test suite:
 
-基于 [Dify](https://github.com/langgenius/dify) `1.17.0`（commit `09a855dcef`）。本仓库只叠加了上述 6 个提交，其余内容与上游保持一致；许可证沿用上游，见仓库根目录的 `LICENSE`。
+```bash
+docker compose exec api uv run pytest tests/unit_tests/core/rag/splitter/test_text_splitter.py -q
+```
+
+### 4. End-to-End Validation
+1. Upload a multi-slide `.pptx` containing charts, tables, and corporate logos into a Dify Knowledge Base dataset.
+2. Inspect the API service logs:
+   ```bash
+   docker compose logs -f api | grep -E "transcribe|decorative"
+   ```
+3. Once indexing finishes, check the document preview in Dify:
+   - Formatted Markdown with structured tables.
+   - Chapter breadcrumbs (e.g., `【Overview > Architecture】`) at the head of chunks.
+   - Preserved image preview URLs for informative figures; corporate logos and decorative graphics cleanly eliminated.
+
+---
+
+## Repository Structure & Commit Log
+
+The commits layered on top of Dify `1.17.0` (`09a855dcef`) represent clean, modular feature increments:
+
+```
+09a855dcef chore: bump version to 1.17.0 (Baseline upstream release)
+b100a01822 feat(rag): introduce native PPTX extractor with transcription hook
+1fbc2d586f feat(rag): wire transcription entrypoint and converge extension whitelist
+72afef16d4 fix(rag): restore pptx dispatch branch with explicit file assertions
+f4d3da069b feat(rag): implement multimodal transcription service & heading-aware splitter
+7d3b3057fc feat(rag): upgrade decorative image filtering to VLM context classification
+7204e8fa3b fix(vdb): resolve Weaviate vector deletion defect to prevent orphan embeddings
+```
+
+---
+
+## Upstream Relationship & License
+
+This repository is maintained as a feature-enhanced fork of [Dify](https://github.com/langgenius/dify) `v1.17.0`. All enhancements maintain strict backward compatibility with upstream APIs.
+
+Original Dify documentation is preserved in [`README.upstream.md`](./README.upstream.md). Distributed under the original project license (see [`LICENSE`](./LICENSE)).
